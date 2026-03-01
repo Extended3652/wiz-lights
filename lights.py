@@ -128,6 +128,8 @@ BACKGROUND_EFFECTS = {
     "fireplace_ambient",
     "asym_static",
     "embers",
+    "bonfire",
+    "aurora",
     "cozy_ambient",
     "candle_pair",
     "breathe_soft",
@@ -1161,6 +1163,55 @@ async def embers():
         await close_all(bulbs)
 
 
+async def bonfire():
+    bulbs = await get_bulbs()
+    if len(bulbs) < 2:
+        raise RuntimeError("bonfire requires 2 bulbs")
+
+    set_effect_running("bonfire")
+
+    try:
+        await bonfire_organic(managed=False)
+    finally:
+        clear_effect_running()
+        await close_all(bulbs)
+
+
+async def bonfire_organic(min_wait=2, max_wait=9, base_bri=145, bri_jitter=28, managed=True):
+    bulbs = await get_bulbs()
+    if len(bulbs) < 2:
+        raise RuntimeError("bonfire_organic requires 2 bulbs")
+
+    scene_id = 5
+    if managed:
+        set_effect_running("bonfire_organic")
+    print("BONFIRE_ORG   background start")
+
+    try:
+        for b in bulbs:
+            send_raw_scene(b.ip, scene_id, int(base_bri))
+        await asyncio.sleep(0.4)
+
+        while not effect_should_stop():
+            idx = random.choice([0, 1])
+            send_raw_scene(bulbs[idx].ip, scene_id, _fireplace_rand_bri(base_bri, bri_jitter))
+            print(f"BONFIRE_ORG   reseed {bulbs[idx].ip}")
+
+            if random.random() < 0.55:
+                other = 1 - idx
+                delay = random.uniform(0.05, 0.5)
+                await asyncio.sleep(delay)
+                send_raw_scene(bulbs[other].ip, scene_id, _fireplace_rand_bri(base_bri, bri_jitter))
+                print(f"BONFIRE_ORG   reseed {bulbs[other].ip} after {delay:.2f}s")
+
+            await asyncio.sleep(random.uniform(float(min_wait), float(max_wait)))
+
+    finally:
+        if managed:
+            clear_effect_running()
+            await close_all(bulbs)
+
+
 async def fireplace_organic(min_wait=6, max_wait=22, base_bri=120, bri_jitter=18, managed=True):
     bulbs = await get_bulbs()
     if len(bulbs) < 2:
@@ -1427,6 +1478,54 @@ async def storm_distant(base_bri: int = 70) -> None:
         clear_effect_running()
         await close_all(bulbs)
 
+def _aurora_rand_rgb() -> tuple[int, int, int]:
+    roll = random.random()
+    if roll < 0.50:
+        # Green curtain
+        return (random.randint(0, 15), random.randint(160, 255), random.randint(20, 80))
+    if roll < 0.85:
+        # Teal/blue-green ribbon
+        return (random.randint(0, 10), random.randint(100, 200), random.randint(80, 180))
+    # Purple/violet shimmer
+    return (random.randint(80, 160), random.randint(0, 40), random.randint(160, 230))
+
+
+def _aurora_rand_bri(base_bri: int = 70, bri_jitter: int = 20) -> int:
+    return max(20, min(110, base_bri + random.randint(-bri_jitter, bri_jitter)))
+
+
+async def aurora(min_wait: float = 8, max_wait: float = 28, base_bri: int = 70, bri_jitter: int = 20):
+    bulbs = await get_bulbs()
+    if len(bulbs) < 2:
+        raise RuntimeError("aurora requires 2 bulbs")
+
+    set_effect_running("aurora")
+    print("AURORA        background start")
+
+    try:
+        for b in bulbs:
+            await b.turn_on(PilotBuilder(brightness=scale_bri(_aurora_rand_bri(base_bri, bri_jitter)), rgb=_aurora_rand_rgb()))
+        await asyncio.sleep(0.4)
+
+        while not effect_should_stop():
+            idx = random.choice([0, 1])
+            await bulbs[idx].turn_on(PilotBuilder(brightness=scale_bri(_aurora_rand_bri(base_bri, bri_jitter)), rgb=_aurora_rand_rgb()))
+            print(f"AURORA        reseed {bulbs[idx].ip}")
+
+            if random.random() < 0.40:
+                other = 1 - idx
+                delay = random.uniform(0.5, 2.5)
+                await asyncio.sleep(delay)
+                await bulbs[other].turn_on(PilotBuilder(brightness=scale_bri(_aurora_rand_bri(base_bri, bri_jitter)), rgb=_aurora_rand_rgb()))
+                print(f"AURORA        reseed {bulbs[other].ip} after {delay:.2f}s")
+
+            await asyncio.sleep(random.uniform(float(min_wait), float(max_wait)))
+
+    finally:
+        clear_effect_running()
+        await close_all(bulbs)
+
+
 def _clamp(n: int, lo: int, hi: int) -> int:
     return lo if n < lo else hi if n > hi else n
 
@@ -1478,15 +1577,33 @@ def _deep_ocean_rand_bri(base_bri: int, bri_jitter: int, glint: bool = False) ->
     return _clamp(int(bri), 18, 85)
 
 
-async def underwater() -> None:
+async def underwater(min_wait: float = 5, max_wait: float = 20, base_bri: int = 55, bri_jitter: int = 20) -> None:
     bulbs = await get_bulbs()
     if len(bulbs) < 2:
         raise RuntimeError("underwater requires 2 bulbs")
 
     set_effect_running("underwater")
+    print("UNDERWATER    background start")
 
     try:
-        await deep_ocean_organic(managed=False)
+        for b in bulbs:
+            await b.turn_on(PilotBuilder(brightness=scale_bri(_deep_ocean_rand_bri(base_bri, bri_jitter)), rgb=_deep_ocean_rand_rgb()))
+        await asyncio.sleep(0.4)
+
+        while not effect_should_stop():
+            idx = random.choice([0, 1])
+            await bulbs[idx].turn_on(PilotBuilder(brightness=scale_bri(_deep_ocean_rand_bri(base_bri, bri_jitter)), rgb=_deep_ocean_rand_rgb()))
+            print(f"UNDERWATER    reseed {bulbs[idx].ip}")
+
+            if random.random() < 0.35:
+                other = 1 - idx
+                delay = random.uniform(0.3, 1.8)
+                await asyncio.sleep(delay)
+                await bulbs[other].turn_on(PilotBuilder(brightness=scale_bri(_deep_ocean_rand_bri(base_bri, bri_jitter)), rgb=_deep_ocean_rand_rgb()))
+                print(f"UNDERWATER    reseed {bulbs[other].ip} after {delay:.2f}s")
+
+            await asyncio.sleep(random.uniform(float(min_wait), float(max_wait)))
+
     finally:
         clear_effect_running()
         await close_all(bulbs)
@@ -1774,6 +1891,16 @@ async def run_background(cmd: str, args: list[str]) -> None:
         save_last_mode("embers", active_group())
         return
 
+    if cmd == "bonfire":
+        await bonfire()
+        save_last_mode("bonfire", active_group())
+        return
+
+    if cmd == "aurora":
+        await aurora()
+        save_last_mode("aurora", active_group())
+        return
+
     if cmd == "hearth":
         await fireplace_ambient(managed=True, effect_name="hearth")
         save_last_mode("hearth", active_group())
@@ -1785,7 +1912,7 @@ async def run_background(cmd: str, args: list[str]) -> None:
         return
 
     if cmd == "underwater":
-        await deep_ocean_organic()
+        await underwater()
         save_last_mode("underwater", active_group())
         return
 
