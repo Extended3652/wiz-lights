@@ -2221,6 +2221,8 @@ async def main(argv: list[str]) -> None:
         "focus_wave",
         "dusk_drift",
         "embers",
+        "bonfire",
+        "aurora",
         "police_siren",
         "hearth",
         "underwater",
