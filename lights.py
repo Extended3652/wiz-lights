@@ -1532,37 +1532,38 @@ def _clamp(n: int, lo: int, hi: int) -> int:
 
 def _deep_ocean_rand_rgb() -> tuple[int, int, int]:
     """
-    Bold deep-water palette (less "white/cyan"):
-    - More deep blue + emerald
-    - Avoids high G+high B in the common case (that reads whitish)
+    Underwater palette — teal/aqua-dominant:
+    - Core: blue-green balanced teal (the most "water-like" color)
+    - Variation: deeper blue for depth, muted teal-green for kelp light
+    - Avoids pure emerald-green (reads as forest) and pure indigo (reads artificial)
     - Red stays near-zero
     """
     roll = random.random()
 
-    # Rare bioluminescent glint (still saturated, not pale)
+    # Rare bioluminescent glint (vivid cyan-blue)
     if roll < 0.05:
         b = random.randint(215, 255)
         g = random.randint(120, 175)
         r = random.randint(0, 5)
         return (r, g, b)
 
-    # Deep cobalt / abyss blue (dominant)
-    if roll < 0.45:
-        b = random.randint(200, 255)
-        g = random.randint(25, 75)   # keep G low so it doesn't go cyan/white
+    # Deep teal column — main water body, blue-leaning but green present (dominant)
+    if roll < 0.50:
+        b = random.randint(180, 240)
+        g = random.randint(80, 145)
+        r = random.randint(0, 5)
+        return (r, g, b)
+
+    # Darker blue depth — less green, feels like looking into deeper water
+    if roll < 0.75:
+        b = random.randint(195, 255)
+        g = random.randint(35, 85)
         r = random.randint(0, 4)
         return (r, g, b)
 
-    # Emerald / kelp pockets (green-forward, still deep)
-    if roll < 0.80:
-        g = random.randint(150, 240)
-        b = random.randint(35, 110)
-        r = random.randint(0, 8)
-        return (r, g, b)
-
-    # Blue-green current (kept darker, less "pool")
-    b = random.randint(170, 235)
-    g = random.randint(70, 125)
+    # Teal-green shift — filtered surface light, kelp glow (still has significant blue)
+    g = random.randint(120, 175)
+    b = random.randint(140, 210)
     r = random.randint(0, 6)
     return (r, g, b)
 
@@ -1681,15 +1682,32 @@ async def deep_ocean_organic(
         label = ROOM_BY_IP.get(b.ip, "UNKNOWN")
         rooms.setdefault(label, []).append(b)
 
+    async def _global_base_drifter(shared_base: list) -> None:
+        # Slowly shifts the shared base water color so all rooms stay in the same hue
+        loop = asyncio.get_event_loop()
+        while not effect_should_stop():
+            await asyncio.sleep(random.uniform(45.0, 120.0))
+            if effect_should_stop():
+                break
+            start_rgb = shared_base[0]
+            target_rgb = _deep_ocean_rand_rgb()
+            drift_seconds = random.uniform(3.5, 9.0)
+            t_start = loop.time()
+            t_end = t_start + drift_seconds
+            while loop.time() < t_end and not effect_should_stop():
+                t = (loop.time() - t_start) / drift_seconds
+                shared_base[0] = _lerp_rgb(start_rgb, target_rgb, t)
+                await asyncio.sleep(0.35)
+            shared_base[0] = target_rgb
+
     async def _room_loop(room_label: str, room_bulbs: list) -> None:
         # Small phase offset so multiple rooms do not lockstep
         await asyncio.sleep(random.uniform(0.0, 3.5))
 
         room_size = len(room_bulbs)
 
-        # A room-level base "water color" that drifts slowly
-        base_rgb = _deep_ocean_rand_rgb()
-        target_rgb = _deep_ocean_rand_rgb()
+        # Read the current shared base color (updated by _global_base_drifter)
+        base_rgb = shared_base[0]
 
         # Per-bulb state
         cur_rgb: dict[str, tuple[int, int, int]] = {}
@@ -1709,9 +1727,6 @@ async def deep_ocean_organic(
         loop = asyncio.get_event_loop()
         t_now = loop.time()
 
-        next_base_shift_at = t_now + random.uniform(45.0, 120.0)
-        base_shift_ends_at = t_now
-
         next_wave_at = t_now + random.uniform(35.0, 95.0)
         next_glint_at = t_now + random.uniform(60.0, 180.0)
 
@@ -1723,25 +1738,8 @@ async def deep_ocean_organic(
         while not effect_should_stop():
             now = loop.time()
 
-            # Start a new base drift occasionally
-            if now >= next_base_shift_at:
-                next_base_shift_at = now + random.uniform(45.0, 120.0)
-
-                # Choose a new target, but keep it deep (avoid pale pool colors)
-                target_rgb = _deep_ocean_rand_rgb()
-
-                drift_seconds = random.uniform(3.5, 9.0)
-                base_shift_ends_at = now + drift_seconds
-                base_shift_start = now
-                base_rgb_start = base_rgb
-
-                # Drift base_rgb toward target_rgb over drift_seconds
-                while (loop.time() < base_shift_ends_at) and (not effect_should_stop()):
-                    t = (loop.time() - base_shift_start) / max(0.001, drift_seconds)
-                    base_rgb = _lerp_rgb(base_rgb_start, target_rgb, t)
-                    await asyncio.sleep(0.35)
-
-                base_rgb = target_rgb
+            # Track the shared base color (drifted globally so all rooms stay in sync)
+            base_rgb = shared_base[0]
 
             # Rare "surface wave" event: brief brighter cyan-ish sweep, then settle
             if now >= next_wave_at:
@@ -1839,7 +1837,9 @@ async def deep_ocean_organic(
 
     try:
         import math
-        tasks = [asyncio.create_task(_room_loop(label, bs)) for label, bs in rooms.items()]
+        shared_base = [_deep_ocean_rand_rgb()]
+        tasks = [asyncio.create_task(_global_base_drifter(shared_base))]
+        tasks += [asyncio.create_task(_room_loop(label, bs)) for label, bs in rooms.items()]
         await asyncio.gather(*tasks)
     finally:
         if managed:
@@ -1912,7 +1912,7 @@ async def run_background(cmd: str, args: list[str]) -> None:
         return
 
     if cmd == "underwater":
-        await underwater()
+        await deep_ocean_organic()
         save_last_mode("underwater", active_group())
         return
 
