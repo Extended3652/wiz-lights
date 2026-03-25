@@ -128,6 +128,7 @@ BACKGROUND_EFFECTS = {
     "fireplace_ambient",
     "asym_static",
     "embers",
+    "ember_glow",
     "cozy_ambient",
     "candle_pair",
     "breathe_soft",
@@ -278,6 +279,7 @@ PRESET_RGB_HINTS = {
 
     # Background effects (menu color hints)
     "embers": (255, 115, 35),
+    "ember_glow": (255, 140, 45),
     "hearth": (255, 150, 70),
     "fireplace_ambient": (255, 125, 45),
     "storm_distant": (150, 165, 190),
@@ -1318,6 +1320,54 @@ async def candle_pair(base_bri: int = 80, jitter: int = 10, min_wait: float = 2.
         await close_all(bulbs)
 
 
+async def ember_glow(low: int = 50, high: int = 120, base_cycle_a: float = 30.0, base_cycle_b: float = 38.0) -> None:
+    """Two bulbs in warm amber tones breathing slowly and independently — like settling embers."""
+    bulbs = await get_bulbs()
+    if len(bulbs) < 2:
+        raise RuntimeError("ember_glow requires 2 bulbs")
+
+    set_effect_running("ember_glow")
+    print("EMBER_GLOW    background start")
+
+    rgb_a = (255, 110, 25)   # deep ember orange
+    rgb_b = (255, 165, 50)   # warm golden amber
+
+    async def breathe_bulb(bulb, rgb, base_cycle, start_going_up):
+        going_up = start_going_up
+        while not effect_should_stop():
+            half = base_cycle / 2 * random.uniform(0.8, 1.25)
+            steps = max(int(half * 5), 1)
+            delay = half / steps
+            start_bri = low if going_up else high
+            end_bri = high if going_up else low
+            loop = asyncio.get_event_loop()
+            t0 = loop.time()
+            for i in range(steps):
+                if effect_should_stop():
+                    return
+                level = (i + 1) / steps
+                bri = int(start_bri + (end_bri - start_bri) * level)
+                await bulb.turn_on(PilotBuilder(brightness=scale_bri(max(1, min(255, bri))), rgb=rgb))
+                next_tick = t0 + (i + 1) * delay
+                await asyncio.sleep(max(0, next_tick - loop.time()))
+            going_up = not going_up
+
+    try:
+        await asyncio.gather(
+            bulbs[0].turn_on(PilotBuilder(brightness=scale_bri(low), rgb=rgb_a)),
+            bulbs[1].turn_on(PilotBuilder(brightness=scale_bri(high), rgb=rgb_b)),
+        )
+        await asyncio.sleep(0.4)
+
+        await asyncio.gather(
+            breathe_bulb(bulbs[0], rgb_a, base_cycle_a, True),
+            breathe_bulb(bulbs[1], rgb_b, base_cycle_b, False),
+        )
+    finally:
+        clear_effect_running()
+        await close_all(bulbs)
+
+
 async def _apply_brightness_all(bulbs, bri: int, ct: int = 2700) -> None:
     bri = int(max(1, min(255, bri)))
     bri = scale_bri(bri) if effect_is_running() else bri
@@ -1753,6 +1803,10 @@ async def run_background(cmd: str, args: list[str]) -> None:
         await candle_pair()
         return
 
+    if cmd == "ember_glow":
+        await ember_glow()
+        return
+
     if cmd == "breathe_soft":
         await breathe_soft()
         return
@@ -2090,6 +2144,7 @@ async def main(argv: list[str]) -> None:
         "asym_static",
         "cozy_ambient",
         "candle_pair",
+        "ember_glow",
         "breathe_soft",
         "focus_wave",
         "dusk_drift",
