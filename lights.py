@@ -1323,16 +1323,16 @@ async def candle_pair(base_bri: int = 80, jitter: int = 10, min_wait: float = 2.
 
 
 async def ember_glow(low: int = 50, high: int = 120, base_cycle_a: float = 30.0, base_cycle_b: float = 38.0) -> None:
-    """Two bulbs in warm amber tones breathing slowly and independently — like settling embers."""
+    """All bulbs breathe slowly in warm amber tones, independently — like settling embers."""
     bulbs = await get_bulbs()
     if len(bulbs) < 2:
-        raise RuntimeError("ember_glow requires 2 bulbs")
+        raise RuntimeError("ember_glow requires at least 2 bulbs")
 
     set_effect_running("ember_glow")
     print("EMBER_GLOW    background start")
 
-    rgb_a = (255, 110, 25)   # deep ember orange
-    rgb_b = (255, 165, 50)   # warm golden amber
+    colors = [(255, 110, 25), (255, 165, 50)]   # ember orange, golden amber
+    base_cycles = [base_cycle_a, base_cycle_b]
 
     async def breathe_bulb(bulb, rgb, base_cycle, start_going_up):
         going_up = start_going_up
@@ -1355,32 +1355,32 @@ async def ember_glow(low: int = 50, high: int = 120, base_cycle_a: float = 30.0,
             going_up = not going_up
 
     try:
-        await asyncio.gather(
-            bulbs[0].turn_on(PilotBuilder(brightness=scale_bri(low), rgb=rgb_a)),
-            bulbs[1].turn_on(PilotBuilder(brightness=scale_bri(high), rgb=rgb_b)),
-        )
+        await asyncio.gather(*[
+            b.turn_on(PilotBuilder(brightness=scale_bri(low if i % 2 == 0 else high), rgb=colors[i % 2]))
+            for i, b in enumerate(bulbs)
+        ])
         await asyncio.sleep(0.4)
 
-        await asyncio.gather(
-            breathe_bulb(bulbs[0], rgb_a, base_cycle_a, True),
-            breathe_bulb(bulbs[1], rgb_b, base_cycle_b, False),
-        )
+        await asyncio.gather(*[
+            breathe_bulb(b, colors[i % 2], base_cycles[i % 2] * (1 + i * 0.07), i % 2 == 0)
+            for i, b in enumerate(bulbs)
+        ])
     finally:
         clear_effect_running()
         await close_all(bulbs)
 
 
 async def moonlit(low: int = 40, high: int = 110, base_cycle_a: float = 32.0, base_cycle_b: float = 41.0) -> None:
-    """Two bulbs in cool blue and soft lavender breathing slowly and independently — calm moonlight."""
+    """All bulbs breathe slowly in cool blue and soft lavender, independently — calm moonlight."""
     bulbs = await get_bulbs()
     if len(bulbs) < 2:
-        raise RuntimeError("moonlit requires 2 bulbs")
+        raise RuntimeError("moonlit requires at least 2 bulbs")
 
     set_effect_running("moonlit")
     print("MOONLIT       background start")
 
-    rgb_a = (55, 90, 255)    # cool moonlight blue
-    rgb_b = (110, 65, 225)   # soft lavender
+    colors = [(55, 90, 255), (110, 65, 225)]   # moonlight blue, soft lavender
+    base_cycles = [base_cycle_a, base_cycle_b]
 
     async def breathe_bulb(bulb, rgb, base_cycle, start_going_up):
         going_up = start_going_up
@@ -1403,16 +1403,16 @@ async def moonlit(low: int = 40, high: int = 110, base_cycle_a: float = 32.0, ba
             going_up = not going_up
 
     try:
-        await asyncio.gather(
-            bulbs[0].turn_on(PilotBuilder(brightness=scale_bri(low), rgb=rgb_a)),
-            bulbs[1].turn_on(PilotBuilder(brightness=scale_bri(high), rgb=rgb_b)),
-        )
+        await asyncio.gather(*[
+            b.turn_on(PilotBuilder(brightness=scale_bri(low if i % 2 == 0 else high), rgb=colors[i % 2]))
+            for i, b in enumerate(bulbs)
+        ])
         await asyncio.sleep(0.4)
 
-        await asyncio.gather(
-            breathe_bulb(bulbs[0], rgb_a, base_cycle_a, True),
-            breathe_bulb(bulbs[1], rgb_b, base_cycle_b, False),
-        )
+        await asyncio.gather(*[
+            breathe_bulb(b, colors[i % 2], base_cycles[i % 2] * (1 + i * 0.07), i % 2 == 0)
+            for i, b in enumerate(bulbs)
+        ])
     finally:
         clear_effect_running()
         await close_all(bulbs)
