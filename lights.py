@@ -2293,6 +2293,8 @@ async def main(argv: list[str]) -> None:
         "hearth",
         "underwater",
         "storm_distant",
+        "moonlit",
+        "abyss",
     }:
         launch_background(cmd, group_for_bg)
         save_last_mode(cmd, active_group())
