@@ -2348,20 +2348,7 @@ async def main(argv: list[str]) -> None:
         return
 
     # ---------------- background effects ----------------
-    if cmd in {
-        "fireplace_ambient",
-        "asym_static",
-        "cozy_ambient",
-        "candle_pair",
-        "breathe_soft",
-        "focus_wave",
-        "dusk_drift",
-        "embers",
-        "police_siren",
-        "hearth",
-        "underwater",
-        "storm_distant",
-    }:
+    if cmd in BACKGROUND_EFFECTS:
         launch_background(cmd, group_for_bg)
         save_last_mode(cmd, active_group())
         return
