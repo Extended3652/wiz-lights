@@ -137,6 +137,7 @@ BACKGROUND_EFFECTS = {
     "underwater",
     "storm_distant",
     "police_siren",
+    "abyss",
 }
 
 # --------------------------------------------------
@@ -289,6 +290,7 @@ PRESET_RGB_HINTS = {
     "dusk_drift": (255, 140, 85),
     "police_siren": (255, 0, 0),
     "underwater": (0, 120, 255),
+    "abyss": (0, 20, 200),
 }
 
 # --------------------------------------------------
@@ -1730,6 +1732,262 @@ async def deep_ocean_organic(
         await close_all(bulbs)
 
 
+def _abyss_rand_rgb() -> tuple[int, int, int]:
+    """
+    Night-aquarium / deep abyss palette.
+    Inky navy base with rare electric bioluminescent flashes.
+    Almost zero red, near-zero green for the base — pure void blue.
+    """
+    roll = random.random()
+
+    # Electric bioluminescent pulse (rare, vivid cyan-white)
+    if roll < 0.05:
+        b = random.randint(220, 255)
+        g = random.randint(155, 220)
+        r = 0
+        return (r, g, b)
+
+    # Inky deep navy / indigo (dominant — the abyss itself)
+    if roll < 0.52:
+        b = random.randint(170, 255)
+        g = random.randint(0, 28)
+        r = 0
+        return (r, g, b)
+
+    # Deep violet-blue (faint depth, hints of pressure)
+    if roll < 0.75:
+        b = random.randint(155, 220)
+        g = random.randint(0, 15)
+        r = random.randint(0, 20)
+        return (r, g, b)
+
+    # Near-black abyss trench (the deepest reach)
+    b = random.randint(90, 165)
+    g = random.randint(0, 12)
+    r = 0
+    return (r, g, b)
+
+
+async def abyss() -> None:
+    bulbs = await get_bulbs()
+    if len(bulbs) < 2:
+        raise RuntimeError("abyss requires 2 bulbs")
+
+    set_effect_running("abyss")
+
+    try:
+        await abyss_organic(managed=False)
+    finally:
+        clear_effect_running()
+        await close_all(bulbs)
+
+
+async def abyss_organic(managed: bool = True) -> None:
+    """
+    Deep aquarium-at-night effect.
+    Very dark inky navy base, intense electric bioluminescent glints,
+    rare pressure-wave surges, slow drift through abyssal blues.
+    """
+    bulbs = await get_bulbs()
+    if len(bulbs) < 2:
+        raise RuntimeError("abyss_organic requires at least 2 bulbs")
+
+    if managed:
+        set_effect_running("abyss")
+    print("ABYSS         background start")
+
+    base_bri: int = 22
+    bri_jitter: int = 28
+
+    def _clamp01(x: float) -> float:
+        return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
+
+    def _clampi(x: int, lo: int, hi: int) -> int:
+        return lo if x < lo else hi if x > hi else x
+
+    def _lerp(a: float, b: float, t: float) -> float:
+        t = _clamp01(float(t))
+        return float(a) + (float(b) - float(a)) * t
+
+    def _lerp_rgb(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+        return (
+            int(round(_lerp(a[0], b[0], t))),
+            int(round(_lerp(a[1], b[1], t))),
+            int(round(_lerp(a[2], b[2], t))),
+        )
+
+    def _tint_for_slot(base_rgb: tuple[int, int, int], slot: int, room_size: int) -> tuple[int, int, int]:
+        r, g, b = base_rgb
+        if room_size <= 1:
+            return base_rgb
+        if slot % 2 == 0:
+            # Pure inky navy — strip any remaining green
+            g = int(round(g * 0.50))
+            b = int(round(_lerp(b, 245, 0.08)))
+        else:
+            # Slight violet-indigo shift for separation
+            b = int(round(b * 0.82))
+            r = int(round(_lerp(r, 38, 0.20)))
+        return (_clampi(r, 0, 22), _clampi(g, 0, 55), _clampi(b, 70, 255))
+
+    async def _safe_turn_on_rgb(b, rgb: tuple[int, int, int], bri_0_255: int) -> None:
+        bri_0_255 = int(_clampi(int(bri_0_255), 1, 255))
+        try:
+            await b.turn_on(PilotBuilder(rgb=rgb, brightness=bri_0_255, warm_white=0, cold_white=0))
+        except TypeError:
+            await b.turn_on(PilotBuilder(rgb=rgb, brightness=bri_0_255))
+
+    rooms: dict[str, list] = {}
+    for b in bulbs:
+        label = ROOM_BY_IP.get(b.ip, "UNKNOWN")
+        rooms.setdefault(label, []).append(b)
+
+    async def _room_loop(room_label: str, room_bulbs: list) -> None:
+        await asyncio.sleep(random.uniform(0.0, 2.5))
+        room_size = len(room_bulbs)
+
+        base_rgb = _abyss_rand_rgb()
+        target_rgb = _abyss_rand_rgb()
+
+        cur_rgb: dict[str, tuple[int, int, int]] = {}
+        cur_bri: dict[str, int] = {}
+
+        for i, b in enumerate(room_bulbs):
+            rgb_i = _tint_for_slot(base_rgb, i, room_size)
+            bri = scale_bri(_clampi(base_bri + random.randint(-8, 8), 10, 50))
+            cur_rgb[b.ip] = rgb_i
+            cur_bri[b.ip] = bri
+            await _safe_turn_on_rgb(b, rgb_i, bri)
+            await asyncio.sleep(0.06 + (i * 0.05))
+
+        loop = asyncio.get_event_loop()
+        t_now = loop.time()
+
+        # Abyss barely moves — slow color drift
+        next_base_shift_at = t_now + random.uniform(60.0, 150.0)
+        base_shift_ends_at = t_now
+
+        # Pressure wave: a surge of brightness, like a large creature passing
+        next_wave_at = t_now + random.uniform(20.0, 65.0)
+
+        # Bioluminescent glints: frequent and electric against the darkness
+        next_glint_at = t_now + random.uniform(12.0, 45.0)
+
+        bulb_phase: dict[str, float] = {}
+        for b in room_bulbs:
+            bulb_phase[b.ip] = random.uniform(0.0, 6.28)
+
+        while not effect_should_stop():
+            now = loop.time()
+
+            # Slow abyssal color drift
+            if now >= next_base_shift_at:
+                next_base_shift_at = now + random.uniform(60.0, 150.0)
+                target_rgb = _abyss_rand_rgb()
+                drift_seconds = random.uniform(5.0, 12.0)
+                base_shift_ends_at = now + drift_seconds
+                base_shift_start = now
+                base_rgb_start = base_rgb
+
+                while (loop.time() < base_shift_ends_at) and (not effect_should_stop()):
+                    t = (loop.time() - base_shift_start) / max(0.001, drift_seconds)
+                    base_rgb = _lerp_rgb(base_rgb_start, target_rgb, t)
+                    await asyncio.sleep(0.42)
+
+                base_rgb = target_rgb
+
+            # Pressure wave: sudden bright electric surge on one bulb, echo on follow
+            if now >= next_wave_at:
+                next_wave_at = now + random.uniform(20.0, 65.0)
+
+                if room_bulbs:
+                    lead_idx = random.randint(0, room_size - 1)
+                    lead = room_bulbs[lead_idx]
+
+                    wave_rgb = (0, random.randint(110, 175), random.randint(215, 255))
+                    wave_bri = scale_bri(_clampi(base_bri + bri_jitter + random.randint(18, 40), 35, 140))
+                    await _safe_turn_on_rgb(lead, wave_rgb, wave_bri)
+                    await asyncio.sleep(random.uniform(0.12, 0.45))
+
+                    follow_idx = (lead_idx + 1) % room_size
+                    follow = room_bulbs[follow_idx]
+                    follow_rgb = (0, random.randint(70, 125), random.randint(185, 240))
+                    follow_bri = scale_bri(_clampi(base_bri + random.randint(6, 20), 16, 85))
+                    await _safe_turn_on_rgb(follow, follow_rgb, follow_bri)
+                    await asyncio.sleep(random.uniform(0.28, 0.75))
+
+            # Electric bioluminescent glint: instantaneous flash, slow fade back to black
+            if now >= next_glint_at:
+                next_glint_at = now + random.uniform(12.0, 45.0)
+
+                if room_bulbs:
+                    gbulb = random.choice(room_bulbs)
+                    gidx = room_bulbs.index(gbulb)
+
+                    glint_rgb = (0, random.randint(175, 240), random.randint(228, 255))
+                    peak = scale_bri(_clampi(base_bri + bri_jitter + random.randint(28, 60), 50, 170))
+                    settle = scale_bri(_clampi(base_bri + random.randint(-12, 4), 8, 40))
+
+                    # Instantaneous flash
+                    await _safe_turn_on_rgb(gbulb, glint_rgb, peak)
+                    await asyncio.sleep(random.uniform(0.04, 0.16))
+
+                    # Slow fade back into the dark
+                    decay_steps = random.randint(10, 18)
+                    decay_total = random.uniform(1.8, 4.5)
+                    normal_rgb = _tint_for_slot(base_rgb, gidx, room_size)
+                    for i in range(decay_steps):
+                        if effect_should_stop():
+                            break
+                        t = (i + 1) / decay_steps
+                        bri = int(round(_lerp(peak, settle, t)))
+                        rgb = _lerp_rgb(glint_rgb, normal_rgb, t)
+                        await _safe_turn_on_rgb(gbulb, rgb, bri)
+                        await asyncio.sleep(decay_total / decay_steps)
+
+            # Dark shimmer: subtle undulation keeping lights dim
+            shimmer_dt = random.uniform(0.30, 1.15)
+
+            tasks = []
+            for i, b in enumerate(room_bulbs):
+                base_tint = _tint_for_slot(base_rgb, i, room_size)
+                prev = cur_rgb.get(b.ip, base_tint)
+                micro_target = _lerp_rgb(prev, base_tint, random.uniform(0.10, 0.28))
+                cur_rgb[b.ip] = micro_target
+
+                ph = bulb_phase.get(b.ip, 0.0)
+                ph += random.uniform(0.08, 0.38)
+                bulb_phase[b.ip] = ph
+
+                shimmer = (math.sin(ph) + 1.0) * 0.5
+                jitter = random.uniform(-0.22, 0.22)
+                shimmer = _clamp01(shimmer + jitter)
+
+                # Keep it very dark: tight floor, restrained ceiling
+                bri_floor = _clampi(int(base_bri - int(bri_jitter * 0.68)), 6, 25)
+                bri_ceil = _clampi(int(base_bri + int(bri_jitter * 0.25)), 16, 50)
+
+                bri_raw = int(round(_lerp(bri_floor, bri_ceil, shimmer)))
+                bri = scale_bri(bri_raw)
+                cur_bri[b.ip] = bri
+
+                tasks.append(_safe_turn_on_rgb(b, micro_target, bri))
+
+            if tasks:
+                await asyncio.gather(*tasks)
+
+            await asyncio.sleep(shimmer_dt)
+
+    try:
+        import math
+        tasks = [asyncio.create_task(_room_loop(label, bs)) for label, bs in rooms.items()]
+        await asyncio.gather(*tasks)
+    finally:
+        if managed:
+            clear_effect_running()
+        await close_all(bulbs)
+
+
 # --------------------------------------------------
 # BACKGROUND DISPATCH
 # --------------------------------------------------
@@ -1787,6 +2045,11 @@ async def run_background(cmd: str, args: list[str]) -> None:
     if cmd == "underwater":
         await deep_ocean_organic()
         save_last_mode("underwater", active_group())
+        return
+
+    if cmd == "abyss":
+        await abyss_organic()
+        save_last_mode("abyss", active_group())
         return
 
     if cmd == "alert_police":
