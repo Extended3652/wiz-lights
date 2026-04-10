@@ -141,6 +141,8 @@ BACKGROUND_EFFECTS = {
     "underwater",
     "storm_distant",
     "police_siren",
+    "moonlit",
+    "abyss",
 }
 
 # --------------------------------------------------
@@ -1948,6 +1950,189 @@ async def deep_ocean_organic(
 
 
 # --------------------------------------------------
+# MOONLIT  (cool-toned embers for sleep)
+# --------------------------------------------------
+
+def _moonlit_rand_rgb() -> tuple[int, int, int]:
+    """
+    Deep sleep palette — midnight blues, indigos, cool violets.
+    Colors are intentionally saturated and distinct so each shift is visible.
+    """
+    roll = random.random()
+
+    # Deep midnight blue (dominant — ~40 %)
+    if roll < 0.40:
+        return (random.randint(0, 8), random.randint(8, 38), random.randint(105, 185))
+
+    # Cool indigo / blue-violet (~25 %)
+    if roll < 0.65:
+        return (random.randint(12, 40), random.randint(0, 20), random.randint(88, 155))
+
+    # Pale silver-blue — brief brighter moment (~17 %)
+    if roll < 0.82:
+        return (random.randint(5, 22), random.randint(28, 70), random.randint(150, 220))
+
+    # Dark cool teal-night (rare — ~18 %)
+    return (random.randint(0, 10), random.randint(52, 100), random.randint(115, 170))
+
+
+def _moonlit_rand_bri(base_bri: int = 26, bri_jitter: int = 25) -> int:
+    """Noticeable brightness swing — floor stays dim, peaks are visible."""
+    raw = base_bri + random.randint(-bri_jitter, bri_jitter)
+    return max(8, min(62, int(scale_bri(raw))))
+
+
+async def _moonlit_single(
+    bulb,
+    base_bri: int,
+    bri_jitter: int,
+    min_wait: float,
+    max_wait: float,
+) -> None:
+    rgb = _moonlit_rand_rgb()
+    bri = _moonlit_rand_bri(base_bri, bri_jitter)
+    await bulb.turn_on(PilotBuilder(rgb=rgb, brightness=bri))
+    await asyncio.sleep(0.3)
+
+    while not effect_should_stop():
+        rgb = _moonlit_rand_rgb()
+        bri = _moonlit_rand_bri(base_bri, bri_jitter)
+        await bulb.turn_on(PilotBuilder(rgb=rgb, brightness=bri))
+        await asyncio.sleep(random.uniform(min_wait, max_wait))
+
+
+async def moonlit() -> None:
+    """
+    Deep cool embers for sleep — each bulb independently drifts through
+    midnight blues, indigos, and cool violets at low brightness.
+    Changes are deliberate and visible (not a soft shimmer), but slow.
+    """
+    bulbs = await get_bulbs()
+    if not bulbs:
+        return
+
+    set_effect_running("moonlit")
+    print("MOONLIT       background start")
+
+    # Stagger phase so bulbs never change together
+    phase_offsets = [i * 2.8 for i in range(len(bulbs))]
+
+    async def _slotted(b, offset: float, base: int, jitter: int, lo: float, hi: float) -> None:
+        await asyncio.sleep(offset)
+        await _moonlit_single(b, base, jitter, lo, hi)
+
+    try:
+        # Alternate bulbs between slightly different brightness bands
+        # so they feel independent without losing coherence.
+        tasks = []
+        params = [
+            (26, 25, 5.5, 16.0),
+            (22, 26, 7.0, 19.0),
+            (25, 24, 6.0, 17.0),
+            (23, 25, 7.5, 18.5),
+        ]
+        for i, b in enumerate(bulbs):
+            base, jitter, lo, hi = params[i % len(params)]
+            tasks.append(asyncio.create_task(
+                _slotted(b, phase_offsets[i], base, jitter, lo, hi)
+            ))
+        await asyncio.gather(*tasks)
+    finally:
+        clear_effect_running()
+        await close_all(bulbs)
+
+
+# --------------------------------------------------
+# ABYSS  (deeper, darker cool embers for sleep)
+# --------------------------------------------------
+
+def _abyss_rand_rgb() -> tuple[int, int, int]:
+    """
+    Deeper, more saturated cool palette than moonlit.
+    Heavy on near-black blues and rich indigos; rare cold violet flare.
+    """
+    roll = random.random()
+
+    # Near-black deep blue (dominant ~45 %)
+    if roll < 0.45:
+        return (random.randint(0, 6), random.randint(5, 28), random.randint(80, 160))
+
+    # Rich indigo / deep violet (~30 %)
+    if roll < 0.75:
+        return (random.randint(18, 55), random.randint(0, 15), random.randint(75, 140))
+
+    # Cold steel blue — brief accent (~15 %)
+    if roll < 0.90:
+        return (random.randint(4, 18), random.randint(22, 58), random.randint(130, 200))
+
+    # Rare deep teal-void (~10 %)
+    return (random.randint(0, 8), random.randint(45, 88), random.randint(100, 155))
+
+
+def _abyss_rand_bri(base_bri: int = 18, bri_jitter: int = 30) -> int:
+    """Large swing: floor stays near-black, peaks are clearly visible."""
+    raw = base_bri + random.randint(-bri_jitter, bri_jitter)
+    return max(6, min(55, int(scale_bri(raw))))
+
+
+async def _abyss_single(
+    bulb,
+    base_bri: int,
+    bri_jitter: int,
+    min_wait: float,
+    max_wait: float,
+) -> None:
+    rgb = _abyss_rand_rgb()
+    bri = _abyss_rand_bri(base_bri, bri_jitter)
+    await bulb.turn_on(PilotBuilder(rgb=rgb, brightness=bri))
+    await asyncio.sleep(0.3)
+
+    while not effect_should_stop():
+        rgb = _abyss_rand_rgb()
+        bri = _abyss_rand_bri(base_bri, bri_jitter)
+        await bulb.turn_on(PilotBuilder(rgb=rgb, brightness=bri))
+        await asyncio.sleep(random.uniform(min_wait, max_wait))
+
+
+async def abyss() -> None:
+    """
+    Deeper, darker cool embers for sleep.
+    Near-black blues and rich indigos; jitter ±30 so each bulb shift is
+    clearly visible, like watching embers settle — just cold instead of warm.
+    """
+    bulbs = await get_bulbs()
+    if not bulbs:
+        return
+
+    set_effect_running("abyss")
+    print("ABYSS         background start")
+
+    phase_offsets = [i * 2.3 for i in range(len(bulbs))]
+
+    async def _slotted(b, offset: float, base: int, jitter: int, lo: float, hi: float) -> None:
+        await asyncio.sleep(offset)
+        await _abyss_single(b, base, jitter, lo, hi)
+
+    try:
+        params = [
+            (18, 30, 3.5, 12.0),
+            (16, 31, 4.5, 13.5),
+            (19, 29, 4.0, 12.5),
+            (17, 30, 5.0, 14.0),
+        ]
+        tasks = []
+        for i, b in enumerate(bulbs):
+            base, jitter, lo, hi = params[i % len(params)]
+            tasks.append(asyncio.create_task(
+                _slotted(b, phase_offsets[i], base, jitter, lo, hi)
+            ))
+        await asyncio.gather(*tasks)
+    finally:
+        clear_effect_running()
+        await close_all(bulbs)
+
+
+# --------------------------------------------------
 # BACKGROUND DISPATCH
 # --------------------------------------------------
 
@@ -2022,6 +2207,16 @@ async def run_background(cmd: str, args: list[str]) -> None:
     if cmd == "underwater":
         await deep_ocean_organic()
         save_last_mode("underwater", active_group())
+        return
+
+    if cmd == "moonlit":
+        await moonlit()
+        save_last_mode("moonlit", active_group())
+        return
+
+    if cmd == "abyss":
+        await abyss()
+        save_last_mode("abyss", active_group())
         return
 
     if cmd == "alert_police":
@@ -2337,6 +2532,8 @@ async def main(argv: list[str]) -> None:
         "hearth",
         "underwater",
         "storm_distant",
+        "moonlit",
+        "abyss",
     }:
         launch_background(cmd, group_for_bg)
         save_last_mode(cmd, active_group())
