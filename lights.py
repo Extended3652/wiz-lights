@@ -141,7 +141,6 @@ BACKGROUND_EFFECTS = {
     "underwater",
     "storm_distant",
     "police_siren",
-    "moonlit",
     "abyss",
 }
 
@@ -1424,54 +1423,6 @@ async def ember_glow(low: int = 50, high: int = 120, base_cycle_a: float = 30.0,
         await close_all(bulbs)
 
 
-async def moonlit(low: int = 40, high: int = 110, base_cycle_a: float = 32.0, base_cycle_b: float = 41.0) -> None:
-    """All bulbs breathe slowly in cool blue and soft lavender, independently — calm moonlight."""
-    bulbs = await get_bulbs()
-    if len(bulbs) < 2:
-        raise RuntimeError("moonlit requires at least 2 bulbs")
-
-    set_effect_running("moonlit")
-    print("MOONLIT       background start")
-
-    colors = [(55, 90, 255), (110, 65, 225)]   # moonlight blue, soft lavender
-    base_cycles = [base_cycle_a, base_cycle_b]
-
-    async def breathe_bulb(bulb, rgb, base_cycle, start_going_up):
-        going_up = start_going_up
-        while not effect_should_stop():
-            half = base_cycle / 2 * random.uniform(0.8, 1.25)
-            steps = max(int(half * 5), 1)
-            delay = half / steps
-            start_bri = low if going_up else high
-            end_bri = high if going_up else low
-            loop = asyncio.get_event_loop()
-            t0 = loop.time()
-            for i in range(steps):
-                if effect_should_stop():
-                    return
-                level = (i + 1) / steps
-                bri = int(start_bri + (end_bri - start_bri) * level)
-                await bulb.turn_on(PilotBuilder(brightness=scale_bri(max(1, min(255, bri))), rgb=rgb))
-                next_tick = t0 + (i + 1) * delay
-                await asyncio.sleep(max(0, next_tick - loop.time()))
-            going_up = not going_up
-
-    try:
-        await asyncio.gather(*[
-            b.turn_on(PilotBuilder(brightness=scale_bri(low if i % 2 == 0 else high), rgb=colors[i % 2]))
-            for i, b in enumerate(bulbs)
-        ])
-        await asyncio.sleep(0.4)
-
-        await asyncio.gather(*[
-            breathe_bulb(b, colors[i % 2], base_cycles[i % 2] * (1 + i * 0.07), i % 2 == 0)
-            for i, b in enumerate(bulbs)
-        ])
-    finally:
-        clear_effect_running()
-        await close_all(bulbs)
-
-
 async def _apply_brightness_all(bulbs, bri: int, ct: int = 2700) -> None:
     bri = int(max(1, min(255, bri)))
     bri = scale_bri(bri) if effect_is_running() else bri
@@ -2179,96 +2130,6 @@ async def moonlit() -> None:
 
 
 # --------------------------------------------------
-# ABYSS  (deeper, darker cool embers for sleep)
-# --------------------------------------------------
-
-def _abyss_rand_rgb() -> tuple[int, int, int]:
-    """
-    Deeper, more saturated cool palette than moonlit.
-    Heavy on near-black blues and rich indigos; rare cold violet flare.
-    """
-    roll = random.random()
-
-    # Near-black deep blue (dominant ~45 %)
-    if roll < 0.45:
-        return (random.randint(0, 6), random.randint(5, 28), random.randint(80, 160))
-
-    # Rich indigo / deep violet (~30 %)
-    if roll < 0.75:
-        return (random.randint(18, 55), random.randint(0, 15), random.randint(75, 140))
-
-    # Cold steel blue — brief accent (~15 %)
-    if roll < 0.90:
-        return (random.randint(4, 18), random.randint(22, 58), random.randint(130, 200))
-
-    # Rare deep teal-void (~10 %)
-    return (random.randint(0, 8), random.randint(45, 88), random.randint(100, 155))
-
-
-def _abyss_rand_bri(base_bri: int = 18, bri_jitter: int = 30) -> int:
-    """Large swing: floor stays near-black, peaks are clearly visible."""
-    raw = base_bri + random.randint(-bri_jitter, bri_jitter)
-    return max(6, min(55, int(scale_bri(raw))))
-
-
-async def _abyss_single(
-    bulb,
-    base_bri: int,
-    bri_jitter: int,
-    min_wait: float,
-    max_wait: float,
-) -> None:
-    rgb = _abyss_rand_rgb()
-    bri = _abyss_rand_bri(base_bri, bri_jitter)
-    await bulb.turn_on(PilotBuilder(rgb=rgb, brightness=bri))
-    await asyncio.sleep(0.3)
-
-    while not effect_should_stop():
-        rgb = _abyss_rand_rgb()
-        bri = _abyss_rand_bri(base_bri, bri_jitter)
-        await bulb.turn_on(PilotBuilder(rgb=rgb, brightness=bri))
-        await asyncio.sleep(random.uniform(min_wait, max_wait))
-
-
-async def abyss() -> None:
-    """
-    Deeper, darker cool embers for sleep.
-    Near-black blues and rich indigos; jitter ±30 so each bulb shift is
-    clearly visible, like watching embers settle — just cold instead of warm.
-    """
-    bulbs = await get_bulbs()
-    if not bulbs:
-        return
-
-    set_effect_running("abyss")
-    print("ABYSS         background start")
-
-    phase_offsets = [i * 2.3 for i in range(len(bulbs))]
-
-    async def _slotted(b, offset: float, base: int, jitter: int, lo: float, hi: float) -> None:
-        await asyncio.sleep(offset)
-        await _abyss_single(b, base, jitter, lo, hi)
-
-    try:
-        params = [
-            (18, 30, 3.5, 12.0),
-            (16, 31, 4.5, 13.5),
-            (19, 29, 4.0, 12.5),
-            (17, 30, 5.0, 14.0),
-        ]
-        tasks = []
-        for i, b in enumerate(bulbs):
-            base, jitter, lo, hi = params[i % len(params)]
-            tasks.append(asyncio.create_task(
-                _slotted(b, phase_offsets[i], base, jitter, lo, hi)
-            ))
-        await asyncio.gather(*tasks)
-    finally:
-        clear_effect_running()
-        await close_all(bulbs)
-
-
-# --------------------------------------------------
 # BACKGROUND DISPATCH
 # --------------------------------------------------
 
@@ -2293,10 +2154,6 @@ async def run_background(cmd: str, args: list[str]) -> None:
 
     if cmd == "ember_glow":
         await ember_glow()
-        return
-
-    if cmd == "moonlit":
-        await moonlit()
         return
 
     if cmd == "breathe_soft":
@@ -2669,7 +2526,6 @@ async def main(argv: list[str]) -> None:
         "hearth",
         "underwater",
         "storm_distant",
-        "moonlit",
         "abyss",
     }:
         launch_background(cmd, group_for_bg)
