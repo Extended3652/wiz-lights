@@ -1,3 +1,5 @@
+#!/home/pi/venvs/wiz/bin/python
+
 import asyncio
 from pywizlight import wizlight
 
