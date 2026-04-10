@@ -137,6 +137,7 @@ BACKGROUND_EFFECTS = {
     "underwater",
     "storm_distant",
     "police_siren",
+    "abyss",
 }
 
 # --------------------------------------------------
@@ -289,6 +290,7 @@ PRESET_RGB_HINTS = {
     "dusk_drift": (255, 140, 85),
     "police_siren": (255, 0, 0),
     "underwater": (0, 120, 255),
+    "abyss": (0, 55, 180),
 }
 
 # --------------------------------------------------
@@ -1478,6 +1480,141 @@ def _deep_ocean_rand_bri(base_bri: int, bri_jitter: int, glint: bool = False) ->
     return _clamp(int(bri), 18, 85)
 
 
+# --------------------------------------------------
+# ABYSS — deep-ocean colors, embers-like simplicity
+# --------------------------------------------------
+
+def _abyss_vary_rgb(rgb: tuple[int, int, int]) -> tuple[int, int, int]:
+    r, g, b = rgb
+    r = _clamp(r + random.randint(-3, 3), 0, 15)
+    g = _clamp(g + random.randint(-25, 25), 20, 240)
+    b = _clamp(b + random.randint(-25, 25), 25, 255)
+    return (r, g, b)
+
+
+def _abyss_lerp(a: float, b: float, t: float) -> float:
+    t = max(0.0, min(1.0, float(t)))
+    return float(a) + (float(b) - float(a)) * t
+
+
+def _abyss_lerp_rgb(
+    a: tuple[int, int, int], b: tuple[int, int, int], t: float
+) -> tuple[int, int, int]:
+    return (
+        int(round(_abyss_lerp(a[0], b[0], t))),
+        int(round(_abyss_lerp(a[1], b[1], t))),
+        int(round(_abyss_lerp(a[2], b[2], t))),
+    )
+
+
+async def _abyss_safe_turn_on(b, rgb: tuple[int, int, int], bri_0_255: int) -> None:
+    bri_0_255 = max(1, min(255, int(bri_0_255)))
+    try:
+        await b.turn_on(PilotBuilder(rgb=rgb, brightness=bri_0_255, warm_white=0, cold_white=0))
+    except TypeError:
+        await b.turn_on(PilotBuilder(rgb=rgb, brightness=bri_0_255))
+
+
+async def _abyss_bulb_loop(
+    bulb,
+    room_label: str,
+    room_state: dict,
+    other_room_state: dict,
+    pressure: dict,
+    base_bri: int,
+    bri_jitter: int,
+    follow_chance: float = 0.40,
+) -> None:
+    cur_rgb = _deep_ocean_rand_rgb()
+    cur_bri = _clamp(_deep_ocean_rand_bri(base_bri, bri_jitter), 18, 75)
+    await _abyss_safe_turn_on(bulb, cur_rgb, scale_bri(cur_bri))
+
+    await asyncio.sleep(random.uniform(0.5, 3.0))
+
+    while not effect_should_stop():
+        # Priority 1: pressure shift — all bulbs converge
+        pressure_rgb = pressure.get("rgb")
+        if pressure_rgb:
+            target_rgb = _abyss_vary_rgb(pressure_rgb)
+        # Priority 2: follow other room (~40%, with delay)
+        elif (other_rgb := other_room_state.get("last_rgb")) and random.random() < follow_chance:
+            await asyncio.sleep(random.uniform(2.0, 8.0))
+            if effect_should_stop():
+                return
+            target_rgb = _abyss_vary_rgb(other_rgb)
+        # Default: fresh independent color
+        else:
+            target_rgb = _deep_ocean_rand_rgb()
+
+        target_bri = _clamp(_deep_ocean_rand_bri(base_bri, bri_jitter), 18, 75)
+
+        # Slow lerp to target over 3-7 seconds
+        drift_time = random.uniform(3.0, 7.0)
+        steps = max(1, int(drift_time / 0.4))
+        for i in range(steps):
+            if effect_should_stop():
+                return
+            t = (i + 1) / steps
+            rgb = _abyss_lerp_rgb(cur_rgb, target_rgb, t)
+            bri = int(round(_abyss_lerp(cur_bri, target_bri, t)))
+            await _abyss_safe_turn_on(bulb, rgb, scale_bri(bri))
+            await asyncio.sleep(drift_time / steps)
+
+        cur_rgb = target_rgb
+        cur_bri = target_bri
+        room_state["last_rgb"] = cur_rgb
+
+        # Organic wait before next shift
+        await asyncio.sleep(random.uniform(8.0, 25.0))
+
+
+async def _abyss_pressure_loop(pressure: dict) -> None:
+    await asyncio.sleep(random.uniform(60.0, 120.0))
+    while not effect_should_stop():
+        target = _deep_ocean_rand_rgb()
+        pressure["rgb"] = target
+        await asyncio.sleep(random.uniform(10.0, 15.0))
+        pressure.pop("rgb", None)
+        await asyncio.sleep(random.uniform(90.0, 240.0))
+
+
+async def abyss() -> None:
+    bulbs = await get_bulbs()
+    if len(bulbs) < 2:
+        raise RuntimeError("abyss requires at least 2 bulbs")
+
+    set_effect_running("abyss")
+    print("ABYSS         background start")
+
+    rooms: dict[str, list] = {}
+    for b in bulbs:
+        label = ROOM_BY_IP.get(b.ip, "UNKNOWN")
+        rooms.setdefault(label, []).append(b)
+
+    room_labels = list(rooms.keys())
+    room_states: dict[str, dict] = {label: {} for label in room_labels}
+    pressure: dict = {}
+
+    try:
+        tasks = []
+        for label, room_bulbs in rooms.items():
+            other_label = next((l for l in room_labels if l != label), label)
+            for bulb in room_bulbs:
+                tasks.append(
+                    _abyss_bulb_loop(
+                        bulb, label,
+                        room_states[label], room_states[other_label],
+                        pressure,
+                        base_bri=40, bri_jitter=18,
+                    )
+                )
+        tasks.append(_abyss_pressure_loop(pressure))
+        await asyncio.gather(*tasks)
+    finally:
+        clear_effect_running()
+        await close_all(bulbs)
+
+
 async def underwater() -> None:
     bulbs = await get_bulbs()
     if len(bulbs) < 2:
@@ -1789,6 +1926,11 @@ async def run_background(cmd: str, args: list[str]) -> None:
         save_last_mode("underwater", active_group())
         return
 
+    if cmd == "abyss":
+        await abyss()
+        save_last_mode("abyss", active_group())
+        return
+
     if cmd == "alert_police":
         secs = float(args[0]) if len(args) > 0 else 15.0
         stop_running_effect(active_group())
@@ -2098,6 +2240,7 @@ async def main(argv: list[str]) -> None:
         "hearth",
         "underwater",
         "storm_distant",
+        "abyss",
     }:
         launch_background(cmd, group_for_bg)
         save_last_mode(cmd, active_group())
