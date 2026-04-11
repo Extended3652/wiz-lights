@@ -1586,39 +1586,39 @@ def _clamp(n: int, lo: int, hi: int) -> int:
 
 def _deep_ocean_rand_rgb() -> tuple[int, int, int]:
     """
-    Underwater palette — teal/aqua-dominant:
-    - Core: blue-green balanced teal (the most "water-like" color)
-    - Variation: deeper blue for depth, muted teal-green for kelp light
-    - Avoids pure emerald-green (reads as forest) and pure indigo (reads artificial)
-    - Red stays near-zero
+    Abyss palette — dark aquarium, deep-dive blues:
+    - Dominated by near-black deep blue (like deep_dive: 0, 80, 255)
+    - Kelp/emerald pockets are dark and muted, not vivid
+    - Bioluminescent glints are rare and still saturated
+    - Red stays near-zero throughout
     """
     roll = random.random()
 
-    # Rare bioluminescent glint (vivid cyan-blue)
+    # Rare bioluminescent glint — brief spark of teal-blue, not pale
     if roll < 0.05:
-        b = random.randint(215, 255)
-        g = random.randint(120, 175)
-        r = random.randint(0, 5)
-        return (r, g, b)
-
-    # Deep teal column — main water body, blue-leaning but green present (dominant)
-    if roll < 0.50:
-        b = random.randint(180, 240)
-        g = random.randint(80, 145)
-        r = random.randint(0, 5)
-        return (r, g, b)
-
-    # Darker blue depth — less green, feels like looking into deeper water
-    if roll < 0.75:
-        b = random.randint(195, 255)
-        g = random.randint(35, 85)
+        b = random.randint(200, 245)
+        g = random.randint(60, 120)
         r = random.randint(0, 4)
         return (r, g, b)
 
-    # Teal-green shift — filtered surface light, kelp glow (still has significant blue)
-    g = random.randint(120, 175)
-    b = random.randint(140, 210)
-    r = random.randint(0, 6)
+    # Deep cobalt / abyss blue (dominant) — anchored near deep_dive (0, 80, 255)
+    if roll < 0.55:
+        b = random.randint(170, 240)
+        g = random.randint(10, 50)   # very low green keeps it inky, not cyan
+        r = random.randint(0, 3)
+        return (r, g, b)
+
+    # Dark kelp / deep-sea green — murky, not vivid
+    if roll < 0.82:
+        g = random.randint(50, 110)
+        b = random.randint(15, 65)
+        r = random.randint(0, 6)
+        return (r, g, b)
+
+    # Deep indigo current — cool, dark blue-green
+    b = random.randint(120, 190)
+    g = random.randint(25, 70)
+    r = random.randint(0, 4)
     return (r, g, b)
 
 
@@ -1628,8 +1628,8 @@ def _deep_ocean_rand_bri(base_bri: int, bri_jitter: int, glint: bool = False) ->
     else:
         bri = base_bri + random.randint(-bri_jitter, bri_jitter)
 
-    # Lower ceiling helps avoid that washed-out / whitish look
-    return _clamp(int(bri), 18, 85)
+    # Low ceiling keeps the abyss dark and dramatic
+    return _clamp(int(bri), 12, 55)
 
 
 # --------------------------------------------------
@@ -1802,8 +1802,8 @@ async def underwater(min_wait: float = 5, max_wait: float = 20, base_bri: int = 
 async def deep_ocean_organic(
     min_wait: float = 6.0,   # kept for compatibility, not the main driver anymore
     max_wait: float = 22.0,  # kept for compatibility, not the main driver anymore
-    base_bri: int = 44,
-    bri_jitter: int = 22,
+    base_bri: int = 28,
+    bri_jitter: int = 13,
     follow_chance: float = 0.18,  # kept for compatibility, not used in the new model
     managed: bool = True,
 ) -> None:
@@ -1941,7 +1941,7 @@ async def deep_ocean_organic(
 
                     # Lead wave
                     wave_rgb_lead = _toward_cyan(_tint_for_slot(base_rgb, lead_idx, room_size), 0.55)
-                    wave_bri_lead = scale_bri(_clampi(int(base_bri + bri_jitter + random.randint(10, 24)), 20, 110))
+                    wave_bri_lead = scale_bri(_clampi(int(base_bri + bri_jitter + random.randint(6, 14)), 18, 68))
 
                     await _safe_turn_on_rgb(lead, wave_rgb_lead, wave_bri_lead)
                     await asyncio.sleep(random.uniform(0.25, 0.85))
@@ -1950,7 +1950,7 @@ async def deep_ocean_organic(
                     if follow and (follow is not lead):
                         follow_idx = room_bulbs.index(follow)
                         wave_rgb_follow = _toward_cyan(_tint_for_slot(base_rgb, follow_idx, room_size), 0.40)
-                        wave_bri_follow = scale_bri(_clampi(int(base_bri + random.randint(6, 18)), 18, 95))
+                        wave_bri_follow = scale_bri(_clampi(int(base_bri + random.randint(4, 12)), 14, 55))
                         await _safe_turn_on_rgb(follow, wave_rgb_follow, wave_bri_follow)
 
                     await asyncio.sleep(random.uniform(0.55, 1.20))
@@ -1964,10 +1964,10 @@ async def deep_ocean_organic(
                     gidx = room_bulbs.index(gbulb)
 
                     glint_rgb = _deep_ocean_rand_rgb()
-                    glint_rgb = (_clampi(glint_rgb[0], 0, 8), _clampi(glint_rgb[1], 110, 185), _clampi(glint_rgb[2], 215, 255))
+                    glint_rgb = (_clampi(glint_rgb[0], 0, 5), _clampi(glint_rgb[1], 60, 140), _clampi(glint_rgb[2], 180, 245))
 
-                    peak = scale_bri(_clampi(int(base_bri + random.randint(22, 40)), 30, 120))
-                    base_settle = scale_bri(_clampi(int(base_bri + random.randint(-6, 8)), 18, 85))
+                    peak = scale_bri(_clampi(int(base_bri + random.randint(14, 26)), 22, 72))
+                    base_settle = scale_bri(_clampi(int(base_bri + random.randint(-6, 6)), 10, 48))
 
                     # Rise
                     await _safe_turn_on_rgb(gbulb, glint_rgb, peak)
@@ -2009,9 +2009,9 @@ async def deep_ocean_organic(
                 jitter = random.uniform(-0.35, 0.35)
                 shimmer = _clamp01(shimmer + jitter)
 
-                # Keep it deep most of the time, allow occasional slightly brighter crests
-                bri_floor = _clampi(int(base_bri - int(bri_jitter * 0.55)), 18, 75)
-                bri_ceil = _clampi(int(base_bri + int(bri_jitter * 0.35)), 22, 85)
+                # Keep it deep — abyss should stay dark even at shimmer peaks
+                bri_floor = _clampi(int(base_bri - int(bri_jitter * 0.55)), 10, 42)
+                bri_ceil = _clampi(int(base_bri + int(bri_jitter * 0.35)), 14, 52)
 
                 bri_raw = int(round(_lerp(bri_floor, bri_ceil, shimmer)))
                 bri = scale_bri(bri_raw)
