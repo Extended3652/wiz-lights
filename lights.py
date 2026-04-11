@@ -1586,39 +1586,39 @@ def _clamp(n: int, lo: int, hi: int) -> int:
 
 def _deep_ocean_rand_rgb() -> tuple[int, int, int]:
     """
-    Abyss palette — dark aquarium, deep-dive blues:
-    - Dominated by near-black deep blue (like deep_dive: 0, 80, 255)
-    - Kelp/emerald pockets are dark and muted, not vivid
-    - Bioluminescent glints are rare and still saturated
-    - Red stays near-zero throughout
+    Abyss palette — deepest dark aquarium, near-black ocean blues:
+    - Dominated by very dark blue (the kind you see at depth, almost black)
+    - Kelp/emerald pockets are murky and muted
+    - Bioluminescent glints are rare and restrained
+    - Red stays at zero throughout
     """
     roll = random.random()
 
-    # Rare bioluminescent glint — brief spark of teal-blue, not pale
+    # Rare bioluminescent glint — brief spark of dark teal-blue
     if roll < 0.05:
-        b = random.randint(200, 245)
-        g = random.randint(60, 120)
-        r = random.randint(0, 4)
+        b = random.randint(170, 215)
+        g = random.randint(35, 85)
+        r = 0
         return (r, g, b)
 
-    # Deep cobalt / abyss blue (dominant) — anchored near deep_dive (0, 80, 255)
-    if roll < 0.55:
-        b = random.randint(170, 240)
-        g = random.randint(10, 50)   # very low green keeps it inky, not cyan
+    # Near-black deep ocean (dominant) — the core of the abyss
+    if roll < 0.60:
+        b = random.randint(130, 200)
+        g = random.randint(4, 28)    # near-black green
+        r = 0
+        return (r, g, b)
+
+    # Dark kelp / deep-sea green — murky, heavily suppressed
+    if roll < 0.85:
+        g = random.randint(30, 75)
+        b = random.randint(8, 45)
         r = random.randint(0, 3)
         return (r, g, b)
 
-    # Dark kelp / deep-sea green — murky, not vivid
-    if roll < 0.82:
-        g = random.randint(50, 110)
-        b = random.randint(15, 65)
-        r = random.randint(0, 6)
-        return (r, g, b)
-
-    # Deep indigo current — cool, dark blue-green
-    b = random.randint(120, 190)
-    g = random.randint(25, 70)
-    r = random.randint(0, 4)
+    # Deep indigo current — cold, dark blue-green
+    b = random.randint(90, 155)
+    g = random.randint(12, 45)
+    r = 0
     return (r, g, b)
 
 
@@ -1628,8 +1628,8 @@ def _deep_ocean_rand_bri(base_bri: int, bri_jitter: int, glint: bool = False) ->
     else:
         bri = base_bri + random.randint(-bri_jitter, bri_jitter)
 
-    # Low ceiling keeps the abyss dark and dramatic
-    return _clamp(int(bri), 12, 55)
+    # Very low ceiling keeps the abyss deep and dark
+    return _clamp(int(bri), 6, 38)
 
 
 # --------------------------------------------------
@@ -1653,14 +1653,14 @@ async def _abyss_safe_turn_on(b, rgb: tuple[int, int, int], bri_0_255: int) -> N
 
 
 async def abyss(
-    min_wait: float = 6.0,
-    max_wait: float = 22.0,
-    base_bri: int = 40,
-    bri_jitter: int = 18,
+    min_wait: float = 1.5,
+    max_wait: float = 6.0,
+    base_bri: int = 22,
+    bri_jitter: int = 14,
     follow_chance: float = 0.55,
-    pair_chance: float = 0.35,
-    wave_min: float = 25.0,
-    wave_max: float = 45.0,
+    pair_chance: float = 0.45,
+    wave_min: float = 14.0,
+    wave_max: float = 28.0,
 ) -> None:
     """
     Deep-ocean colors, embers-style pacing.
