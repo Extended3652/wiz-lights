@@ -1644,21 +1644,6 @@ def _abyss_vary_rgb(rgb: tuple[int, int, int]) -> tuple[int, int, int]:
     return (r, g, b)
 
 
-def _abyss_lerp(a: float, b: float, t: float) -> float:
-    t = max(0.0, min(1.0, float(t)))
-    return float(a) + (float(b) - float(a)) * t
-
-
-def _abyss_lerp_rgb(
-    a: tuple[int, int, int], b: tuple[int, int, int], t: float
-) -> tuple[int, int, int]:
-    return (
-        int(round(_abyss_lerp(a[0], b[0], t))),
-        int(round(_abyss_lerp(a[1], b[1], t))),
-        int(round(_abyss_lerp(a[2], b[2], t))),
-    )
-
-
 async def _abyss_safe_turn_on(b, rgb: tuple[int, int, int], bri_0_255: int) -> None:
     bri_0_255 = max(1, min(255, int(bri_0_255)))
     try:
@@ -1667,70 +1652,25 @@ async def _abyss_safe_turn_on(b, rgb: tuple[int, int, int], bri_0_255: int) -> N
         await b.turn_on(PilotBuilder(rgb=rgb, brightness=bri_0_255))
 
 
-async def _abyss_bulb_loop(
-    bulb,
-    room_label: str,
-    room_state: dict,
-    other_room_state: dict,
-    pressure: dict,
-    base_bri: int,
-    bri_jitter: int,
-    follow_chance: float = 0.40,
+async def abyss(
+    min_wait: float = 6.0,
+    max_wait: float = 22.0,
+    base_bri: int = 40,
+    bri_jitter: int = 18,
+    follow_chance: float = 0.55,
+    pair_chance: float = 0.35,
+    wave_min: float = 25.0,
+    wave_max: float = 45.0,
 ) -> None:
-    cur_rgb = _deep_ocean_rand_rgb()
-    cur_bri = _clamp(_deep_ocean_rand_bri(base_bri, bri_jitter), 18, 75)
-    await _abyss_safe_turn_on(bulb, cur_rgb, scale_bri(cur_bri))
-
-    await asyncio.sleep(random.uniform(0.5, 3.0))
-
-    while not effect_should_stop():
-        # Priority 1: pressure shift — all bulbs converge
-        pressure_rgb = pressure.get("rgb")
-        if pressure_rgb:
-            target_rgb = _abyss_vary_rgb(pressure_rgb)
-        # Priority 2: follow other room (~40%, with delay)
-        elif (other_rgb := other_room_state.get("last_rgb")) and random.random() < follow_chance:
-            await asyncio.sleep(random.uniform(2.0, 8.0))
-            if effect_should_stop():
-                return
-            target_rgb = _abyss_vary_rgb(other_rgb)
-        # Default: fresh independent color
-        else:
-            target_rgb = _deep_ocean_rand_rgb()
-
-        target_bri = _clamp(_deep_ocean_rand_bri(base_bri, bri_jitter), 18, 75)
-
-        # Slow lerp to target over 3-7 seconds
-        drift_time = random.uniform(3.0, 7.0)
-        steps = max(1, int(drift_time / 0.4))
-        for i in range(steps):
-            if effect_should_stop():
-                return
-            t = (i + 1) / steps
-            rgb = _abyss_lerp_rgb(cur_rgb, target_rgb, t)
-            bri = int(round(_abyss_lerp(cur_bri, target_bri, t)))
-            await _abyss_safe_turn_on(bulb, rgb, scale_bri(bri))
-            await asyncio.sleep(drift_time / steps)
-
-        cur_rgb = target_rgb
-        cur_bri = target_bri
-        room_state["last_rgb"] = cur_rgb
-
-        # Organic wait before next shift
-        await asyncio.sleep(random.uniform(8.0, 25.0))
-
-
-async def _abyss_pressure_loop(pressure: dict) -> None:
-    await asyncio.sleep(random.uniform(60.0, 120.0))
-    while not effect_should_stop():
-        target = _deep_ocean_rand_rgb()
-        pressure["rgb"] = target
-        await asyncio.sleep(random.uniform(10.0, 15.0))
-        pressure.pop("rgb", None)
-        await asyncio.sleep(random.uniform(90.0, 240.0))
-
-
-async def abyss() -> None:
+    """
+    Deep-ocean colors, embers-style pacing.
+    - One bulb reseeds per iteration with a 6-22s wait (like fireplace_organic).
+    - 35% chance a second bulb follows shortly after with a 0.15-1.2s delay.
+    - 55% of reseeds target a variant of the other room's last color, so rooms
+      stay roughly in sync instead of drifting into wildly different hues.
+    - Every 25-45s, a pressure wave snaps all bulbs to variants of a single
+      fresh color so the whole space shifts together.
+    """
     bulbs = await get_bulbs()
     if len(bulbs) < 2:
         raise RuntimeError("abyss requires at least 2 bulbs")
@@ -1738,30 +1678,73 @@ async def abyss() -> None:
     set_effect_running("abyss")
     print("ABYSS         background start")
 
-    rooms: dict[str, list] = {}
-    for b in bulbs:
-        label = ROOM_BY_IP.get(b.ip, "UNKNOWN")
-        rooms.setdefault(label, []).append(b)
+    room_last_rgb: dict[str, tuple[int, int, int]] = {}
 
-    room_labels = list(rooms.keys())
-    room_states: dict[str, dict] = {label: {} for label in room_labels}
-    pressure: dict = {}
+    def _room_of(bulb) -> str:
+        return ROOM_BY_IP.get(bulb.ip, "UNKNOWN")
 
     try:
-        tasks = []
-        for label, room_bulbs in rooms.items():
-            other_label = next((l for l in room_labels if l != label), label)
-            for bulb in room_bulbs:
-                tasks.append(
-                    _abyss_bulb_loop(
-                        bulb, label,
-                        room_states[label], room_states[other_label],
-                        pressure,
-                        base_bri=40, bri_jitter=18,
-                    )
-                )
-        tasks.append(_abyss_pressure_loop(pressure))
-        await asyncio.gather(*tasks)
+        # Initial seed — snap every bulb to a deep-ocean color.
+        for b in bulbs:
+            rgb = _deep_ocean_rand_rgb()
+            bri = _deep_ocean_rand_bri(base_bri, bri_jitter)
+            await _abyss_safe_turn_on(b, rgb, scale_bri(bri))
+            room_last_rgb[_room_of(b)] = rgb
+        await asyncio.sleep(0.4)
+
+        loop = asyncio.get_event_loop()
+        next_wave_at = loop.time() + random.uniform(wave_min, wave_max)
+
+        while not effect_should_stop():
+            now = loop.time()
+
+            # ---------------- pressure wave ----------------
+            if now >= next_wave_at:
+                wave_rgb = _deep_ocean_rand_rgb()
+                for b in bulbs:
+                    varied = _abyss_vary_rgb(wave_rgb)
+                    bri = _deep_ocean_rand_bri(base_bri, bri_jitter)
+                    await _abyss_safe_turn_on(b, varied, scale_bri(bri))
+                    room_last_rgb[_room_of(b)] = varied
+                    await asyncio.sleep(random.uniform(0.15, 0.6))
+                print("ABYSS         pressure wave")
+                next_wave_at = loop.time() + random.uniform(wave_min, wave_max)
+                await asyncio.sleep(random.uniform(float(min_wait), float(max_wait)))
+                continue
+
+            # ---------------- normal reseed ----------------
+            idx = random.randrange(len(bulbs))
+            bulb = bulbs[idx]
+            room = _room_of(bulb)
+
+            # 55% chance: follow the OTHER room's last color (variant of it).
+            other_rooms = [r for r in room_last_rgb if r != room]
+            if other_rooms and random.random() < follow_chance:
+                follow_rgb = room_last_rgb[random.choice(other_rooms)]
+                target_rgb = _abyss_vary_rgb(follow_rgb)
+            else:
+                target_rgb = _deep_ocean_rand_rgb()
+
+            target_bri = _deep_ocean_rand_bri(base_bri, bri_jitter)
+            await _abyss_safe_turn_on(bulb, target_rgb, scale_bri(target_bri))
+            room_last_rgb[room] = target_rgb
+            print(f"ABYSS         reseed {bulb.ip}")
+
+            # 35% chance: a second bulb follows shortly after (pairs drift together).
+            if random.random() < pair_chance and len(bulbs) > 1:
+                other_idx = random.choice([i for i in range(len(bulbs)) if i != idx])
+                other_bulb = bulbs[other_idx]
+                delay = random.uniform(0.15, 1.2)
+                await asyncio.sleep(delay)
+                if effect_should_stop():
+                    return
+                pair_rgb = _abyss_vary_rgb(target_rgb)
+                pair_bri = _deep_ocean_rand_bri(base_bri, bri_jitter)
+                await _abyss_safe_turn_on(other_bulb, pair_rgb, scale_bri(pair_bri))
+                room_last_rgb[_room_of(other_bulb)] = pair_rgb
+                print(f"ABYSS         reseed {other_bulb.ip} after {delay:.2f}s")
+
+            await asyncio.sleep(random.uniform(float(min_wait), float(max_wait)))
     finally:
         clear_effect_running()
         await close_all(bulbs)
