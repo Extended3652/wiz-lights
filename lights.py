@@ -507,6 +507,25 @@ def send_raw_scene(ip: str, scene_id: int, brightness_0_255: int) -> None:
         sock.close()
 
 
+def send_raw_rgb(ip: str, r: int, g: int, b: int, brightness_0_255: int) -> None:
+    dimming = _brightness_to_dimming_percent(brightness_0_255)
+    payload = {
+        "id": 1,
+        "method": "setPilot",
+        "params": {
+            "state": True,
+            "r": int(r), "g": int(g), "b": int(b),
+            "dimming": dimming,
+        },
+    }
+    data = json.dumps(payload).encode("utf-8")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.sendto(data, (ip, WIZ_PORT))
+    finally:
+        sock.close()
+
+
 def send_raw_off(ip: str) -> None:
     payload = {
         "id": 1,
@@ -1562,16 +1581,16 @@ def _deep_ocean_rand_rgb() -> tuple[int, int, int]:
         return (r, g, b)
 
     # Dark plum — warmer/redder violet, prevents monotony
-    if roll < 0.85:
+    if roll < 0.90:
         r = random.randint(55, 95)
         g = random.randint(0, 12)
         b = random.randint(90, 140)
         return (r, g, b)
 
-    # Abyssal teal accent — dark desaturated teal for contrast
+    # Abyssal teal accent — dark, blue-leaning teal for contrast (10%)
     r = random.randint(0, 8)
-    g = random.randint(50, 100)
-    b = random.randint(110, 170)
+    g = random.randint(30, 65)
+    b = random.randint(120, 175)
     return (r, g, b)
 
 
@@ -1676,13 +1695,6 @@ async def deep_ocean_organic(
 
         return (_clampi(r, 0, 160), _clampi(g, 0, 30), _clampi(b, 40, 255))
 
-    async def _safe_turn_on_rgb(b, rgb: tuple[int, int, int], bri_0_255: int) -> None:
-        bri_0_255 = int(_clampi(int(bri_0_255), 1, 255))
-        try:
-            await b.turn_on(PilotBuilder(rgb=rgb, brightness=bri_0_255, warm_white=0, cold_white=0))
-        except TypeError:
-            await b.turn_on(PilotBuilder(rgb=rgb, brightness=bri_0_255))
-
     # Group bulbs by room so each room runs independently
     rooms: dict[str, list] = {}
     for b in bulbs:
@@ -1698,6 +1710,7 @@ async def deep_ocean_organic(
                 break
             start_rgb = shared_base[0]
             target_rgb = _deep_ocean_rand_rgb()
+            target_rgb = (target_rgb[0], min(target_rgb[1], 35), target_rgb[2])
             drift_seconds = random.uniform(4.0, 10.0)
             t_start = loop.time()
             t_end = t_start + drift_seconds
@@ -1727,7 +1740,7 @@ async def deep_ocean_organic(
             bri = scale_bri(bri_raw)
             cur_rgb[b.ip] = rgb_i
             cur_bri[b.ip] = bri
-            await _safe_turn_on_rgb(b, rgb_i, bri)
+            send_raw_rgb(b.ip, rgb_i[0], rgb_i[1], rgb_i[2], bri)
             await asyncio.sleep(0.08 + (i * 0.06))
 
         # Timers for events
@@ -1755,14 +1768,14 @@ async def deep_ocean_organic(
                     wave_rgb_lead = _toward_bright_violet(_tint_for_slot(base_rgb, lead_idx, room_size), 0.55)
                     wave_bri_lead = scale_bri(_clampi(int(base_bri + bri_jitter + random.randint(10, 24)), 20, 110))
 
-                    await _safe_turn_on_rgb(lead, wave_rgb_lead, wave_bri_lead)
+                    send_raw_rgb(lead.ip, wave_rgb_lead[0], wave_rgb_lead[1], wave_rgb_lead[2], wave_bri_lead)
                     await asyncio.sleep(random.uniform(0.25, 0.85))
 
                     if follow and (follow is not lead):
                         follow_idx = room_bulbs.index(follow)
                         wave_rgb_follow = _toward_bright_violet(_tint_for_slot(base_rgb, follow_idx, room_size), 0.40)
                         wave_bri_follow = scale_bri(_clampi(int(base_bri + random.randint(6, 18)), 18, 95))
-                        await _safe_turn_on_rgb(follow, wave_rgb_follow, wave_bri_follow)
+                        send_raw_rgb(follow.ip, wave_rgb_follow[0], wave_rgb_follow[1], wave_rgb_follow[2], wave_bri_follow)
 
                     await asyncio.sleep(random.uniform(0.55, 1.20))
 
@@ -1782,7 +1795,7 @@ async def deep_ocean_organic(
                     base_settle = scale_bri(_clampi(int(base_bri + random.randint(-6, 8)), 18, 85))
 
                     # Rise
-                    await _safe_turn_on_rgb(gbulb, glint_rgb, peak)
+                    send_raw_rgb(gbulb.ip, glint_rgb[0], glint_rgb[1], glint_rgb[2], peak)
                     await asyncio.sleep(random.uniform(0.10, 0.30))
 
                     # Decay in steps
@@ -1795,7 +1808,7 @@ async def deep_ocean_organic(
                         bri = int(round(_lerp(peak, base_settle, t)))
                         normal_rgb = _tint_for_slot(base_rgb, gidx, room_size)
                         rgb = _lerp_rgb(glint_rgb, normal_rgb, t)
-                        await _safe_turn_on_rgb(gbulb, rgb, bri)
+                        send_raw_rgb(gbulb.ip, rgb[0], rgb[1], rgb[2], bri)
                         await asyncio.sleep(decay_total / decay_steps)
 
             # Reseed cycle: visible color shift on one bulb, optional follow
@@ -1806,6 +1819,7 @@ async def deep_ocean_organic(
             fresh_rgb = _deep_ocean_rand_rgb()
             tinted = _tint_for_slot(fresh_rgb, lead_idx, room_size)
             blended = _lerp_rgb(base_rgb, tinted, 0.70)
+            blended = (blended[0], min(blended[1], 30), blended[2])
             target_bri = scale_bri(_deep_ocean_rand_bri(base_bri, bri_jitter))
 
             # Fade to new color over several steps (smooth but visible)
@@ -1819,7 +1833,7 @@ async def deep_ocean_organic(
                 t = (step + 1) / fade_steps
                 rgb_now = _lerp_rgb(start_rgb, blended, t)
                 bri_now = int(round(_lerp(start_bri, target_bri, t)))
-                await _safe_turn_on_rgb(lead, rgb_now, bri_now)
+                send_raw_rgb(lead.ip, rgb_now[0], rgb_now[1], rgb_now[2], bri_now)
                 await asyncio.sleep(fade_dur / fade_steps)
             cur_rgb[lead.ip] = blended
             cur_bri[lead.ip] = target_bri
@@ -1833,6 +1847,7 @@ async def deep_ocean_organic(
                 f_fresh = _deep_ocean_rand_rgb()
                 f_tinted = _tint_for_slot(f_fresh, follow_idx, room_size)
                 f_blended = _lerp_rgb(base_rgb, f_tinted, 0.70)
+                f_blended = (f_blended[0], min(f_blended[1], 30), f_blended[2])
                 f_bri = scale_bri(_deep_ocean_rand_bri(base_bri, bri_jitter))
 
                 f_fade_dur = random.uniform(1.2, 3.0)
@@ -1845,7 +1860,7 @@ async def deep_ocean_organic(
                     t = (step + 1) / f_steps
                     rgb_now = _lerp_rgb(f_start_rgb, f_blended, t)
                     bri_now = int(round(_lerp(f_start_bri, f_bri, t)))
-                    await _safe_turn_on_rgb(follow, rgb_now, bri_now)
+                    send_raw_rgb(follow.ip, rgb_now[0], rgb_now[1], rgb_now[2], bri_now)
                     await asyncio.sleep(f_fade_dur / f_steps)
                 cur_rgb[follow.ip] = f_blended
                 cur_bri[follow.ip] = f_bri
