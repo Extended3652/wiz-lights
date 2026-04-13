@@ -136,7 +136,7 @@ BACKGROUND_EFFECTS = {
     "focus_wave",
     "dusk_drift",
     "hearth",
-    "underwater",
+    "abyss",
     "storm_distant",
     "police_siren",
 }
@@ -290,7 +290,7 @@ PRESET_RGB_HINTS = {
     "focus_wave": (210, 235, 255),
     "dusk_drift": (255, 140, 85),
     "police_siren": (255, 0, 0),
-    "underwater": (0, 120, 255),
+    "abyss": (60, 0, 150),
 }
 
 # --------------------------------------------------
@@ -1532,39 +1532,46 @@ def _clamp(n: int, lo: int, hi: int) -> int:
 
 def _deep_ocean_rand_rgb() -> tuple[int, int, int]:
     """
-    Underwater palette — teal/aqua-dominant:
-    - Core: blue-green balanced teal (the most "water-like" color)
-    - Variation: deeper blue for depth, muted teal-green for kelp light
-    - Avoids pure emerald-green (reads as forest) and pure indigo (reads artificial)
-    - Red stays near-zero
+    Abyss palette — violet/indigo-dominant:
+    - Core: dark violet and midnight indigo (deep space, bioluminescent jellyfish)
+    - Variation: dark plum for warmth, abyssal teal for contrast
+    - No pure emerald green. Teal is desaturated and dark.
+    - Green stays near-zero in violet buckets.
     """
     roll = random.random()
 
-    # Rare bioluminescent glint (vivid cyan-blue)
+    # Rare bioluminescent glint (vivid electric violet flash)
     if roll < 0.05:
-        b = random.randint(215, 255)
-        g = random.randint(120, 175)
-        r = random.randint(0, 5)
+        r = random.randint(80, 130)
+        g = random.randint(0, 15)
+        b = random.randint(200, 255)
         return (r, g, b)
 
-    # Deep teal column — main water body, blue-leaning but green present (dominant)
+    # Deep violet core — dominant mood color
     if roll < 0.50:
-        b = random.randint(180, 240)
-        g = random.randint(80, 145)
-        r = random.randint(0, 5)
+        r = random.randint(40, 80)
+        g = random.randint(0, 10)
+        b = random.randint(120, 180)
         return (r, g, b)
 
-    # Darker blue depth — less green, feels like looking into deeper water
+    # Midnight indigo — bluer, provides depth variation
     if roll < 0.75:
-        b = random.randint(195, 255)
-        g = random.randint(35, 85)
-        r = random.randint(0, 4)
+        r = random.randint(20, 50)
+        g = random.randint(0, 8)
+        b = random.randint(160, 220)
         return (r, g, b)
 
-    # Teal-green shift — filtered surface light, kelp glow (still has significant blue)
-    g = random.randint(120, 175)
-    b = random.randint(140, 210)
-    r = random.randint(0, 6)
+    # Dark plum — warmer/redder violet, prevents monotony
+    if roll < 0.85:
+        r = random.randint(55, 95)
+        g = random.randint(0, 12)
+        b = random.randint(90, 140)
+        return (r, g, b)
+
+    # Abyssal teal accent — dark desaturated teal for contrast
+    r = random.randint(0, 8)
+    g = random.randint(50, 100)
+    b = random.randint(110, 170)
     return (r, g, b)
 
 
@@ -1578,13 +1585,13 @@ def _deep_ocean_rand_bri(base_bri: int, bri_jitter: int, glint: bool = False) ->
     return _clamp(int(bri), 18, 85)
 
 
-async def underwater(min_wait: float = 5, max_wait: float = 20, base_bri: int = 55, bri_jitter: int = 20) -> None:
+async def abyss_simple(min_wait: float = 5, max_wait: float = 20, base_bri: int = 55, bri_jitter: int = 20) -> None:
     bulbs = await get_bulbs()
     if len(bulbs) < 2:
-        raise RuntimeError("underwater requires 2 bulbs")
+        raise RuntimeError("abyss requires 2 bulbs")
 
-    set_effect_running("underwater")
-    print("UNDERWATER    background start")
+    set_effect_running("abyss")
+    print("ABYSS         background start")
 
     try:
         for b in bulbs:
@@ -1594,14 +1601,14 @@ async def underwater(min_wait: float = 5, max_wait: float = 20, base_bri: int = 
         while not effect_should_stop():
             idx = random.choice([0, 1])
             await bulbs[idx].turn_on(PilotBuilder(brightness=scale_bri(_deep_ocean_rand_bri(base_bri, bri_jitter)), rgb=_deep_ocean_rand_rgb()))
-            print(f"UNDERWATER    reseed {bulbs[idx].ip}")
+            print(f"ABYSS         reseed {bulbs[idx].ip}")
 
             if random.random() < 0.35:
                 other = 1 - idx
                 delay = random.uniform(0.3, 1.8)
                 await asyncio.sleep(delay)
                 await bulbs[other].turn_on(PilotBuilder(brightness=scale_bri(_deep_ocean_rand_bri(base_bri, bri_jitter)), rgb=_deep_ocean_rand_rgb()))
-                print(f"UNDERWATER    reseed {bulbs[other].ip} after {delay:.2f}s")
+                print(f"ABYSS         reseed {bulbs[other].ip} after {delay:.2f}s")
 
             await asyncio.sleep(random.uniform(float(min_wait), float(max_wait)))
 
@@ -1613,7 +1620,7 @@ async def underwater(min_wait: float = 5, max_wait: float = 20, base_bri: int = 
 async def deep_ocean_organic(
     min_wait: float = 6.0,   # kept for compatibility, not the main driver anymore
     max_wait: float = 22.0,  # kept for compatibility, not the main driver anymore
-    base_bri: int = 44,
+    base_bri: int = 52,
     bri_jitter: int = 22,
     follow_chance: float = 0.18,  # kept for compatibility, not used in the new model
     managed: bool = True,
@@ -1623,8 +1630,8 @@ async def deep_ocean_organic(
         raise RuntimeError("deep_ocean_organic requires at least 2 bulbs")
 
     if managed:
-        set_effect_running("underwater")
-    print("DEEP_OCEAN    background start")
+        set_effect_running("abyss")
+    print("ABYSS         background start")
 
     def _clamp01(x: float) -> float:
         return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
@@ -1643,31 +1650,31 @@ async def deep_ocean_organic(
             int(round(_lerp(a[2], b[2], t))),
         )
 
-    def _toward_cyan(rgb: tuple[int, int, int], amt: float) -> tuple[int, int, int]:
-        # Push toward a watery cyan without going white
+    def _toward_bright_violet(rgb: tuple[int, int, int], amt: float) -> tuple[int, int, int]:
+        # Push toward a vivid electric violet for wave/highlight events
         r, g, b = rgb
-        g2 = int(round(_lerp(g, 165, amt)))
-        b2 = int(round(_lerp(b, 235, amt)))
-        r2 = int(round(_lerp(r, 0, amt)))
-        return (_clampi(r2, 0, 15), _clampi(g2, 40, 210), _clampi(b2, 120, 255))
+        r2 = int(round(_lerp(r, 140, amt)))
+        g2 = int(round(_lerp(g, 0, amt)))
+        b2 = int(round(_lerp(b, 245, amt)))
+        return (_clampi(r2, 10, 180), _clampi(g2, 0, 20), _clampi(b2, 140, 255))
 
     def _tint_for_slot(base_rgb: tuple[int, int, int], slot: int, room_size: int) -> tuple[int, int, int]:
-        # Keep bulbs related (same water), but not identical
+        # Keep bulbs related (same abyss), but not identical
         r, g, b = base_rgb
 
         if room_size <= 1:
             return base_rgb
 
         if slot % 2 == 0:
-            # More blue, less green
-            g = int(round(g * 0.78))
-            b = int(round(_lerp(b, 245, 0.12)))
+            # Cooler: push toward blue-violet (less red, more blue)
+            r = int(round(r * 0.75))
+            b = int(round(_lerp(b, 220, 0.15)))
         else:
-            # More green, less blue
-            b = int(round(b * 0.76))
-            g = int(round(_lerp(g, 210, 0.10)))
+            # Warmer: push toward plum (more red, less blue)
+            b = int(round(b * 0.80))
+            r = int(round(_lerp(r, 110, 0.12)))
 
-        return (_clampi(r, 0, 15), _clampi(g, 20, 240), _clampi(b, 25, 255))
+        return (_clampi(r, 0, 160), _clampi(g, 0, 30), _clampi(b, 40, 255))
 
     async def _safe_turn_on_rgb(b, rgb: tuple[int, int, int], bri_0_255: int) -> None:
         bri_0_255 = int(_clampi(int(bri_0_255), 1, 255))
@@ -1683,15 +1690,15 @@ async def deep_ocean_organic(
         rooms.setdefault(label, []).append(b)
 
     async def _global_base_drifter(shared_base: list) -> None:
-        # Slowly shifts the shared base water color so all rooms stay in the same hue
+        # Shifts the shared base color so all rooms stay in the same hue zone
         loop = asyncio.get_event_loop()
         while not effect_should_stop():
-            await asyncio.sleep(random.uniform(45.0, 120.0))
+            await asyncio.sleep(random.uniform(12.0, 35.0))
             if effect_should_stop():
                 break
             start_rgb = shared_base[0]
             target_rgb = _deep_ocean_rand_rgb()
-            drift_seconds = random.uniform(3.5, 9.0)
+            drift_seconds = random.uniform(4.0, 10.0)
             t_start = loop.time()
             t_end = t_start + drift_seconds
             while loop.time() < t_end and not effect_should_stop():
@@ -1701,8 +1708,8 @@ async def deep_ocean_organic(
             shared_base[0] = target_rgb
 
     async def _room_loop(room_label: str, room_bulbs: list) -> None:
-        # Small phase offset so multiple rooms do not lockstep
-        await asyncio.sleep(random.uniform(0.0, 3.5))
+        # Small phase offset to stagger initial commands
+        await asyncio.sleep(random.uniform(0.0, 0.5))
 
         room_size = len(room_bulbs)
 
@@ -1730,37 +1737,30 @@ async def deep_ocean_organic(
         next_wave_at = t_now + random.uniform(35.0, 95.0)
         next_glint_at = t_now + random.uniform(60.0, 180.0)
 
-        # Per-bulb shimmer phase
-        bulb_phase: dict[str, float] = {}
-        for b in room_bulbs:
-            bulb_phase[b.ip] = random.uniform(0.0, 6.28)
-
         while not effect_should_stop():
             now = loop.time()
 
             # Track the shared base color (drifted globally so all rooms stay in sync)
             base_rgb = shared_base[0]
 
-            # Rare "surface wave" event: brief brighter cyan-ish sweep, then settle
+            # Rare "violet wave" event: brief brighter violet sweep, then settle
             if now >= next_wave_at:
-                next_wave_at = now + random.uniform(35.0, 95.0)
+                next_wave_at = now + random.uniform(25.0, 60.0)
 
                 if room_bulbs:
                     lead_idx = 0 if random.random() < 0.5 else min(1, room_size - 1)
                     lead = room_bulbs[lead_idx]
                     follow = room_bulbs[0] if lead is room_bulbs[-1] else room_bulbs[-1]
 
-                    # Lead wave
-                    wave_rgb_lead = _toward_cyan(_tint_for_slot(base_rgb, lead_idx, room_size), 0.55)
+                    wave_rgb_lead = _toward_bright_violet(_tint_for_slot(base_rgb, lead_idx, room_size), 0.55)
                     wave_bri_lead = scale_bri(_clampi(int(base_bri + bri_jitter + random.randint(10, 24)), 20, 110))
 
                     await _safe_turn_on_rgb(lead, wave_rgb_lead, wave_bri_lead)
                     await asyncio.sleep(random.uniform(0.25, 0.85))
 
-                    # Follow wave (dimmer)
                     if follow and (follow is not lead):
                         follow_idx = room_bulbs.index(follow)
-                        wave_rgb_follow = _toward_cyan(_tint_for_slot(base_rgb, follow_idx, room_size), 0.40)
+                        wave_rgb_follow = _toward_bright_violet(_tint_for_slot(base_rgb, follow_idx, room_size), 0.40)
                         wave_bri_follow = scale_bri(_clampi(int(base_bri + random.randint(6, 18)), 18, 95))
                         await _safe_turn_on_rgb(follow, wave_rgb_follow, wave_bri_follow)
 
@@ -1768,14 +1768,15 @@ async def deep_ocean_organic(
 
             # Rare bioluminescent glint: quick rise, slow decay on one bulb
             if now >= next_glint_at:
-                next_glint_at = now + random.uniform(75.0, 210.0)
+                next_glint_at = now + random.uniform(45.0, 120.0)
 
                 if room_bulbs:
                     gbulb = random.choice(room_bulbs)
                     gidx = room_bulbs.index(gbulb)
 
                     glint_rgb = _deep_ocean_rand_rgb()
-                    glint_rgb = (_clampi(glint_rgb[0], 0, 8), _clampi(glint_rgb[1], 110, 185), _clampi(glint_rgb[2], 215, 255))
+                    # Clamp toward bright violet for the glint
+                    glint_rgb = (_clampi(glint_rgb[0], 100, 160), _clampi(glint_rgb[1], 0, 15), _clampi(glint_rgb[2], 210, 255))
 
                     peak = scale_bri(_clampi(int(base_bri + random.randint(22, 40)), 30, 120))
                     base_settle = scale_bri(_clampi(int(base_bri + random.randint(-6, 8)), 18, 85))
@@ -1792,51 +1793,67 @@ async def deep_ocean_organic(
                             break
                         t = (i + 1) / decay_steps
                         bri = int(round(_lerp(peak, base_settle, t)))
-                        # Fade back toward normal tint too
                         normal_rgb = _tint_for_slot(base_rgb, gidx, room_size)
                         rgb = _lerp_rgb(glint_rgb, normal_rgb, t)
                         await _safe_turn_on_rgb(gbulb, rgb, bri)
                         await asyncio.sleep(decay_total / decay_steps)
 
-            # Caustics shimmer: frequent small brightness changes, color mostly stable
-            shimmer_dt = random.uniform(0.22, 0.95)
+            # Reseed cycle: visible color shift on one bulb, optional follow
+            lead_idx = random.choice(range(room_size))
+            lead = room_bulbs[lead_idx]
 
-            tasks = []
-            for i, b in enumerate(room_bulbs):
-                # Base tint for this bulb at current base_rgb
-                base_tint = _tint_for_slot(base_rgb, i, room_size)
+            # Fresh color, tinted for this slot, blended with global base
+            fresh_rgb = _deep_ocean_rand_rgb()
+            tinted = _tint_for_slot(fresh_rgb, lead_idx, room_size)
+            blended = _lerp_rgb(base_rgb, tinted, 0.70)
+            target_bri = scale_bri(_deep_ocean_rand_bri(base_bri, bri_jitter))
 
-                # Small slow color micro-drift (keeps it alive without "jumping")
-                prev = cur_rgb.get(b.ip, base_tint)
-                micro_target = _lerp_rgb(prev, base_tint, random.uniform(0.15, 0.35))
-                cur_rgb[b.ip] = micro_target
+            # Fade to new color over several steps (smooth but visible)
+            fade_dur = random.uniform(1.5, 3.5)
+            fade_steps = random.randint(6, 12)
+            start_rgb = cur_rgb.get(lead.ip, base_rgb)
+            start_bri = cur_bri.get(lead.ip, target_bri)
+            for step in range(fade_steps):
+                if effect_should_stop():
+                    break
+                t = (step + 1) / fade_steps
+                rgb_now = _lerp_rgb(start_rgb, blended, t)
+                bri_now = int(round(_lerp(start_bri, target_bri, t)))
+                await _safe_turn_on_rgb(lead, rgb_now, bri_now)
+                await asyncio.sleep(fade_dur / fade_steps)
+            cur_rgb[lead.ip] = blended
+            cur_bri[lead.ip] = target_bri
 
-                # Brightness shimmer around base, out of phase per bulb
-                ph = bulb_phase.get(b.ip, 0.0)
-                ph += random.uniform(0.18, 0.55)
-                bulb_phase[b.ip] = ph
+            # Follow/response: other bulb may follow after a short delay
+            if random.random() < 0.40:
+                follow_idx = (lead_idx + 1) % room_size
+                follow = room_bulbs[follow_idx]
+                await asyncio.sleep(random.uniform(0.2, 1.5))
 
-                shimmer = (math.sin(ph) + 1.0) * 0.5  # 0..1
-                jitter = random.uniform(-0.35, 0.35)
-                shimmer = _clamp01(shimmer + jitter)
+                f_fresh = _deep_ocean_rand_rgb()
+                f_tinted = _tint_for_slot(f_fresh, follow_idx, room_size)
+                f_blended = _lerp_rgb(base_rgb, f_tinted, 0.70)
+                f_bri = scale_bri(_deep_ocean_rand_bri(base_bri, bri_jitter))
 
-                # Keep it deep most of the time, allow occasional slightly brighter crests
-                bri_floor = _clampi(int(base_bri - int(bri_jitter * 0.55)), 18, 75)
-                bri_ceil = _clampi(int(base_bri + int(bri_jitter * 0.35)), 22, 85)
+                f_fade_dur = random.uniform(1.2, 3.0)
+                f_steps = random.randint(5, 10)
+                f_start_rgb = cur_rgb.get(follow.ip, base_rgb)
+                f_start_bri = cur_bri.get(follow.ip, f_bri)
+                for step in range(f_steps):
+                    if effect_should_stop():
+                        break
+                    t = (step + 1) / f_steps
+                    rgb_now = _lerp_rgb(f_start_rgb, f_blended, t)
+                    bri_now = int(round(_lerp(f_start_bri, f_bri, t)))
+                    await _safe_turn_on_rgb(follow, rgb_now, bri_now)
+                    await asyncio.sleep(f_fade_dur / f_steps)
+                cur_rgb[follow.ip] = f_blended
+                cur_bri[follow.ip] = f_bri
 
-                bri_raw = int(round(_lerp(bri_floor, bri_ceil, shimmer)))
-                bri = scale_bri(bri_raw)
-                cur_bri[b.ip] = bri
-
-                tasks.append(_safe_turn_on_rgb(b, micro_target, bri))
-
-            if tasks:
-                await asyncio.gather(*tasks)
-
-            await asyncio.sleep(shimmer_dt)
+            # Wait before next reseed
+            await asyncio.sleep(random.uniform(5.0, 16.0))
 
     try:
-        import math
         shared_base = [_deep_ocean_rand_rgb()]
         tasks = [asyncio.create_task(_global_base_drifter(shared_base))]
         tasks += [asyncio.create_task(_room_loop(label, bs)) for label, bs in rooms.items()]
@@ -1911,9 +1928,9 @@ async def run_background(cmd: str, args: list[str]) -> None:
         save_last_mode("police_siren", active_group())
         return
 
-    if cmd == "underwater":
+    if cmd == "abyss":
         await deep_ocean_organic()
-        save_last_mode("underwater", active_group())
+        save_last_mode("abyss", active_group())
         return
 
     if cmd == "alert_police":
@@ -2225,7 +2242,7 @@ async def main(argv: list[str]) -> None:
         "aurora",
         "police_siren",
         "hearth",
-        "underwater",
+        "abyss",
         "storm_distant",
     }:
         launch_background(cmd, group_for_bg)
