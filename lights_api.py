@@ -24,39 +24,52 @@ def status():
     rc, out = run_lights(["status"])
     return {"rc": rc, "out": out}
 
+ALL_IPS = [
+    "192.168.86.123",  # kitchen 1
+    "192.168.86.124",  # kitchen 2
+    "192.168.86.133",  # entryway 1
+    "192.168.86.134",  # entryway 2
+]
+
+ROOM_BY_IP = {
+    "192.168.86.123": "kitchen",
+    "192.168.86.124": "kitchen",
+    "192.168.86.133": "entryway",
+    "192.168.86.134": "entryway",
+}
+
 @app.get("/status/json")
 async def status_json():
-    bulbs = [wizlight(ip) for ip in [
-        "192.168.86.123",
-        "192.168.86.124",
-    ]]
-
+    bulbs = [wizlight(ip) for ip in ALL_IPS]
     results = []
-
     try:
         for bulb in bulbs:
-            state = await bulb.updateState()
-
-            on = state.get_state()
-            bri = state.get_brightness()
-            ct = state.get_colortemp()
-            rgb = state.get_rgb()
-
-            # Normalize rgb=(None,None,None) to None
-            if rgb and all(v is None for v in rgb):
-                rgb = None
-
-            results.append({
-                "ip": bulb.ip,
-                "on": bool(on),
-                "brightness": bri,
-                "colortemp": ct,
-                "rgb": rgb,
-            })
+            try:
+                state = await bulb.updateState()
+                on = state.get_state()
+                bri = state.get_brightness()
+                ct = state.get_colortemp()
+                rgb = state.get_rgb()
+                if rgb and all(v is None for v in rgb):
+                    rgb = None
+                results.append({
+                    "ip": bulb.ip,
+                    "room": ROOM_BY_IP.get(bulb.ip),
+                    "on": bool(on),
+                    "brightness": bri,
+                    "colortemp": ct,
+                    "rgb": rgb,
+                })
+            except Exception:
+                results.append({
+                    "ip": bulb.ip,
+                    "room": ROOM_BY_IP.get(bulb.ip),
+                    "on": None,
+                    "error": "unreachable",
+                })
     finally:
         for bulb in bulbs:
             await bulb.async_close()
-
     return {"bulbs": results}
 
 @app.post("/cmd")
@@ -75,6 +88,36 @@ def preset(name: str):
 @app.post("/off")
 def off():
     rc, out = run_lights(["off"])
+    return {"rc": rc, "out": out}
+
+VALID_ROOMS = {"kitchen", "entryway", "all"}
+
+@app.post("/room/{room}/toggle")
+def room_toggle(room: str):
+    if room not in VALID_ROOMS:
+        raise HTTPException(404, f"Unknown room: {room}")
+    rc, out = run_lights([room, "toggle"])
+    return {"rc": rc, "out": out}
+
+@app.post("/room/{room}/on")
+def room_on(room: str):
+    if room not in VALID_ROOMS:
+        raise HTTPException(404, f"Unknown room: {room}")
+    rc, out = run_lights([room, "on"])
+    return {"rc": rc, "out": out}
+
+@app.post("/room/{room}/off")
+def room_off(room: str):
+    if room not in VALID_ROOMS:
+        raise HTTPException(404, f"Unknown room: {room}")
+    rc, out = run_lights([room, "off"])
+    return {"rc": rc, "out": out}
+
+@app.post("/room/{room}/preset/{name}")
+def room_preset(room: str, name: str):
+    if room not in VALID_ROOMS:
+        raise HTTPException(404, f"Unknown room: {room}")
+    rc, out = run_lights([room, name])
     return {"rc": rc, "out": out}
 
 @app.post("/fade/{name}/{seconds}")

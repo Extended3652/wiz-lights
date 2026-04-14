@@ -539,6 +539,20 @@ def send_raw_off(ip: str) -> None:
     finally:
         sock.close()
 
+def send_raw_dim1(ip: str) -> None:
+    """Snap a bulb to 1% dimming (used before OFF to avoid slow fade)."""
+    payload = {
+        "id": 1,
+        "method": "setPilot",
+        "params": {"state": True, "dimming": 1},
+    }
+    data = json.dumps(payload).encode("utf-8")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.sendto(data, (ip, WIZ_PORT))
+    finally:
+        sock.close()
+
 def get_pilot_raw(ip: str, timeout: float = 0.6) -> dict | None:
     """
     Ask the bulb for its current state via WiZ UDP getPilot.
@@ -770,20 +784,10 @@ async def turn_off() -> None:
 
         async def _snap_dim_1(room_bulbs: list) -> None:
             # Some bulbs do a slow fade on OFF. This "snaps" them to 1% first.
-            snap_payload = {
-                "id": 1,
-                "method": "setPilot",
-                "params": {"state": True, "dimming": 1},
-            }
-
-            data = json.dumps(snap_payload).encode("utf-8")
-
-            for b in room_bulbs:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                try:
-                    sock.sendto(data, (b.ip, WIZ_PORT))
-                finally:
-                    sock.close()
+            await asyncio.gather(*[
+                asyncio.to_thread(send_raw_dim1, b.ip)
+                for b in room_bulbs
+            ])
 
         async def _hard_off(room_bulbs: list) -> None:
             # Snap then OFF bursts
@@ -794,7 +798,7 @@ async def turn_off() -> None:
         # Run each room in parallel so entryway matches kitchen timing
         tasks = [asyncio.create_task(_hard_off(room_bulbs)) for room_bulbs in rooms.values()]
         if tasks:
-            await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     finally:
         await close_all(bulbs)
@@ -1843,20 +1847,31 @@ async def main(argv: list[str]) -> None:
         return
 
     if cmd == "toggle":
-        bulbs = await get_bulbs()
-        try:
-            st = await bulbs[0].updateState()
-            if st.get_state():
-                stop_running_effect(active_group())
-                await turn_off()
+        # Optional mode override: lights kitchen toggle cozy
+        toggle_mode = argv[1] if len(argv) > 1 else None
+
+        # Query bulbs using robust UDP helper (returns None on timeout
+        # instead of throwing).  Check all bulbs so one unreachable
+        # bulb doesn't break the toggle.
+        ips = _target_ips()
+        any_on = False
+        for ip in ips:
+            result = await asyncio.to_thread(get_pilot_raw, ip, 0.6)
+            if result is not None:
+                state = result.get("result", {}).get("state", False)
+                if state:
+                    any_on = True
+                    break
+
+        if any_on:
+            stop_running_effect(active_group())
+            await turn_off()
+        else:
+            mode = toggle_mode or load_last_mode(active_group()) or "golden_white"
+            if mode in BACKGROUND_EFFECTS:
+                launch_background(mode, group_for_bg)
             else:
-                mode = load_last_mode(active_group()) or "golden_white"
-                if mode in BACKGROUND_EFFECTS:
-                    launch_background(mode, group_for_bg)
-                else:
-                    await turn_on(mode)
-        finally:
-            await close_all(bulbs)
+                await turn_on(mode)
         return
 
     if cmd == "status":
