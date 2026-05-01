@@ -13,52 +13,11 @@ from pathlib import Path
 from pywizlight import PilotBuilder, wizlight
 from pywizlight.exceptions import WizLightConnectionError
 
+from lights_config import GROUP_ALIASES, GROUPS, IPS, ROOM_BY_IP
+
 # --------------------------------------------------
 # CONFIG
 # --------------------------------------------------
-
-IPS = [
-    "192.168.86.123",  # kitchen 1
-    "192.168.86.124",  # kitchen 2
-    "192.168.86.133",  # entryway 1
-    "192.168.86.134",  # entryway 2
-]
-
-# Map bulb IP -> room label (used by dashboard and status output)
-ROOM_BY_IP = {
-    "192.168.86.123": "KITCHEN",
-    "192.168.86.124": "KITCHEN",
-    "192.168.86.133": "ENTRYWAY",
-    "192.168.86.134": "ENTRYWAY",
-}
-
-GROUPS = {
-    "all": [
-        "192.168.86.123",
-        "192.168.86.124",
-        "192.168.86.133",
-        "192.168.86.134",
-    ],
-    "kitchen": [
-        "192.168.86.123",
-        "192.168.86.124",
-    ],
-    "entryway": [
-        "192.168.86.133",
-        "192.168.86.134",
-    ],
-}
-
-GROUP_ALIASES = {
-    "kitchen": "kitchen",
-    "kit": "kitchen",
-    "k": "kitchen",
-    "entryway": "entryway",
-    "entry": "entryway",
-    "e": "entryway",
-    "all": "all",
-    "a": "all",
-}
 
 ACTIVE_GROUP: str | None = None
 ACTIVE_IPS: list[str] | None = None
@@ -94,6 +53,13 @@ def _target_ips() -> list[str]:
     return ACTIVE_IPS if ACTIVE_IPS is not None else IPS
 
 
+def _normalize_cmd(cmd: str) -> str:
+    normalized = cmd.strip().lower()
+    if normalized in {"-h", "--help"}:
+        return normalized
+    return normalized.replace("-", "_")
+
+
 WIZ_PORT = 38899
 
 STATE_DIR = Path("/home/pi/.lights_state")
@@ -114,6 +80,7 @@ def _snapshot_path(name: str) -> Path:
 STATE_FILE = STATE_DIR / "last_mode"
 EFFECT_FILE = STATE_DIR / "effect_running"
 EFFECT_BRI_FILE = STATE_DIR / "effect_bri"
+DRY_RUN = os.getenv("LIGHTS_DRY_RUN", "").lower() in {"1", "true", "yes", "on"}
 
 CYCLE_ORDER = [
     "warm",
@@ -137,6 +104,11 @@ BACKGROUND_EFFECTS = {
     "dusk_drift",
     "hearth",
     "abyss",
+    "smolder",
+    "midnight_embers",
+    "blue_coals",
+    "afterglow",
+    "campfire_low",
     "storm_distant",
     "police_siren",
 }
@@ -291,6 +263,11 @@ PRESET_RGB_HINTS = {
     "dusk_drift": (255, 140, 85),
     "police_siren": (255, 0, 0),
     "abyss": (60, 0, 150),
+    "smolder": (120, 20, 28),
+    "midnight_embers": (70, 0, 95),
+    "blue_coals": (10, 35, 110),
+    "afterglow": (95, 35, 50),
+    "campfire_low": (160, 70, 28),
 }
 
 # --------------------------------------------------
@@ -1173,41 +1150,21 @@ async def hearth() -> None:
 
 
 async def embers():
-    bulbs = await get_bulbs()
-    if len(bulbs) < 2:
-        raise RuntimeError("embers requires 2 bulbs")
-
-    set_effect_running("embers")
-
-    try:
-        await fireplace_organic(managed=False)
-    finally:
-        clear_effect_running()
-        await close_all(bulbs)
+    await fireplace_organic(managed=True, effect_name="embers")
 
 
 async def bonfire():
-    bulbs = await get_bulbs()
-    if len(bulbs) < 2:
-        raise RuntimeError("bonfire requires 2 bulbs")
-
-    set_effect_running("bonfire")
-
-    try:
-        await bonfire_organic(managed=False)
-    finally:
-        clear_effect_running()
-        await close_all(bulbs)
+    await bonfire_organic(managed=True, effect_name="bonfire")
 
 
-async def bonfire_organic(min_wait=2, max_wait=9, base_bri=145, bri_jitter=28, managed=True):
+async def bonfire_organic(min_wait=2, max_wait=9, base_bri=145, bri_jitter=28, managed=True, effect_name="bonfire_organic"):
     bulbs = await get_bulbs()
     if len(bulbs) < 2:
         raise RuntimeError("bonfire_organic requires 2 bulbs")
 
     scene_id = 5
     if managed:
-        set_effect_running("bonfire_organic")
+        set_effect_running(effect_name)
     print("BONFIRE_ORG   background start")
 
     try:
@@ -1216,12 +1173,12 @@ async def bonfire_organic(min_wait=2, max_wait=9, base_bri=145, bri_jitter=28, m
         await asyncio.sleep(0.4)
 
         while not effect_should_stop():
-            idx = random.choice([0, 1])
+            idx = random.randrange(len(bulbs))
             send_raw_scene(bulbs[idx].ip, scene_id, _fireplace_rand_bri(base_bri, bri_jitter))
             print(f"BONFIRE_ORG   reseed {bulbs[idx].ip}")
 
-            if random.random() < 0.55:
-                other = 1 - idx
+            if len(bulbs) > 1 and random.random() < 0.55:
+                other = random.choice([i for i in range(len(bulbs)) if i != idx])
                 delay = random.uniform(0.05, 0.5)
                 await asyncio.sleep(delay)
                 send_raw_scene(bulbs[other].ip, scene_id, _fireplace_rand_bri(base_bri, bri_jitter))
@@ -1232,17 +1189,17 @@ async def bonfire_organic(min_wait=2, max_wait=9, base_bri=145, bri_jitter=28, m
     finally:
         if managed:
             clear_effect_running()
-            await close_all(bulbs)
+        await close_all(bulbs)
 
 
-async def fireplace_organic(min_wait=6, max_wait=22, base_bri=120, bri_jitter=18, managed=True):
+async def fireplace_organic(min_wait=6, max_wait=22, base_bri=120, bri_jitter=18, managed=True, effect_name="fireplace_organic"):
     bulbs = await get_bulbs()
     if len(bulbs) < 2:
         raise RuntimeError("fireplace_organic requires 2 bulbs")
 
     scene_id = 5
     if managed:
-        set_effect_running("fireplace_organic")
+        set_effect_running(effect_name)
     print("FIREPLACE_ORG  background start")
 
     try:
@@ -1251,12 +1208,12 @@ async def fireplace_organic(min_wait=6, max_wait=22, base_bri=120, bri_jitter=18
         await asyncio.sleep(0.4)
 
         while not effect_should_stop():
-            idx = random.choice([0, 1])
+            idx = random.randrange(len(bulbs))
             send_raw_scene(bulbs[idx].ip, scene_id, _fireplace_rand_bri(base_bri, bri_jitter))
             print(f"FIREPLACE_ORG  reseed {bulbs[idx].ip}")
 
-            if random.random() < 0.35:
-                other = 1 - idx
+            if len(bulbs) > 1 and random.random() < 0.35:
+                other = random.choice([i for i in range(len(bulbs)) if i != idx])
                 delay = random.uniform(0.15, 1.2)
                 await asyncio.sleep(delay)
                 send_raw_scene(bulbs[other].ip, scene_id, _fireplace_rand_bri(base_bri, bri_jitter))
@@ -1267,7 +1224,7 @@ async def fireplace_organic(min_wait=6, max_wait=22, base_bri=120, bri_jitter=18
     finally:
         if managed:
             clear_effect_running()
-            await close_all(bulbs)
+        await close_all(bulbs)
 
 
 async def fireplace_ambient(
@@ -1280,8 +1237,8 @@ async def fireplace_ambient(
     effect_name: str = "fireplace_ambient",
 ) -> None:
     bulbs = await get_bulbs()
-    if len(bulbs) != 2:
-        raise RuntimeError("fireplace_ambient requires exactly 2 bulbs")
+    if len(bulbs) < 2:
+        raise RuntimeError("fireplace_ambient requires at least 2 bulbs")
 
     scene_id = 5
 
@@ -1296,9 +1253,10 @@ async def fireplace_ambient(
         await asyncio.sleep(0.4)
 
         while not effect_should_stop():
-            idx = random.choice([0, 1])
+            idx = random.randrange(len(bulbs))
+            other = random.choice([i for i in range(len(bulbs)) if i != idx])
             src = bulbs[idx]
-            amb = bulbs[1 - idx]
+            amb = bulbs[other]
 
             bri0 = _fireplace_rand_bri(base_bri, bri_jitter)
             send_raw_scene(src.ip, scene_id, bri0)
@@ -1531,12 +1489,12 @@ async def aurora(min_wait: float = 8, max_wait: float = 28, base_bri: int = 70, 
         await asyncio.sleep(0.4)
 
         while not effect_should_stop():
-            idx = random.choice([0, 1])
+            idx = random.randrange(len(bulbs))
             await bulbs[idx].turn_on(PilotBuilder(brightness=scale_bri(_aurora_rand_bri(base_bri, bri_jitter)), rgb=_aurora_rand_rgb()))
             print(f"AURORA        reseed {bulbs[idx].ip}")
 
-            if random.random() < 0.40:
-                other = 1 - idx
+            if len(bulbs) > 1 and random.random() < 0.40:
+                other = random.choice([i for i in range(len(bulbs)) if i != idx])
                 delay = random.uniform(0.5, 2.5)
                 await asyncio.sleep(delay)
                 await bulbs[other].turn_on(PilotBuilder(brightness=scale_bri(_aurora_rand_bri(base_bri, bri_jitter)), rgb=_aurora_rand_rgb()))
@@ -1578,6 +1536,126 @@ def _deep_ocean_rand_rgb() -> tuple[int, int, int]:
     # Deep cobalt — cold accent
     return (random.randint(5, 20), random.randint(0, 10), random.randint(140, 200))
 
+
+def _weighted_palette_choice(palette: list[tuple[int, tuple[int, int], tuple[int, int], tuple[int, int]]]) -> tuple[int, int, int]:
+    total = sum(weight for weight, _r, _g, _b in palette)
+    pick = random.uniform(0, total)
+    upto = 0.0
+    for weight, red, green, blue in palette:
+        upto += weight
+        if pick <= upto:
+            return (
+                random.randint(red[0], red[1]),
+                random.randint(green[0], green[1]),
+                random.randint(blue[0], blue[1]),
+            )
+    _weight, red, green, blue = palette[-1]
+    return (
+        random.randint(red[0], red[1]),
+        random.randint(green[0], green[1]),
+        random.randint(blue[0], blue[1]),
+    )
+
+
+DARK_ORGANIC_EFFECTS = {
+    "smolder": {
+        "base_bri": 52,
+        "bri_jitter": 18,
+        "min_wait": 7,
+        "max_wait": 24,
+        "follow_chance": 0.38,
+        "palette": [
+            (42, (65, 120), (6, 22), (8, 24)),      # oxblood
+            (28, (105, 170), (28, 68), (8, 22)),    # dark ember amber
+            (18, (55, 95), (0, 12), (38, 75)),      # burnt violet
+            (12, (150, 210), (45, 88), (12, 30)),   # brief coal flare
+        ],
+    },
+    "midnight_embers": {
+        "base_bri": 45,
+        "bri_jitter": 16,
+        "min_wait": 8,
+        "max_wait": 26,
+        "follow_chance": 0.42,
+        "palette": [
+            (38, (45, 85), (0, 10), (70, 130)),     # deep purple
+            (30, (12, 35), (0, 8), (95, 170)),      # indigo blue
+            (20, (80, 125), (0, 12), (115, 185)),   # violet glow
+            (12, (125, 185), (28, 58), (24, 48)),   # muted warm ember
+        ],
+    },
+    "blue_coals": {
+        "base_bri": 42,
+        "bri_jitter": 14,
+        "min_wait": 7,
+        "max_wait": 22,
+        "follow_chance": 0.35,
+        "palette": [
+            (42, (4, 18), (12, 34), (80, 150)),     # dark cobalt
+            (30, (10, 36), (0, 12), (120, 205)),    # indigo
+            (18, (35, 75), (0, 20), (95, 170)),     # blue violet
+            (10, (0, 18), (45, 85), (105, 175)),    # dim cyan coal
+        ],
+    },
+    "afterglow": {
+        "base_bri": 48,
+        "bri_jitter": 12,
+        "min_wait": 16,
+        "max_wait": 45,
+        "follow_chance": 0.25,
+        "palette": [
+            (38, (95, 145), (30, 62), (28, 55)),    # ash copper
+            (28, (70, 115), (18, 40), (45, 78)),    # wine shadow
+            (22, (120, 175), (55, 88), (38, 70)),   # low amber
+            (12, (45, 80), (20, 38), (55, 95)),     # smoky plum
+        ],
+    },
+}
+
+
+async def dark_organic(effect_name: str) -> None:
+    spec = DARK_ORGANIC_EFFECTS[effect_name]
+    bulbs = await get_bulbs()
+    if len(bulbs) < 2:
+        raise RuntimeError(f"{effect_name} requires at least 2 bulbs")
+
+    set_effect_running(effect_name)
+    label = effect_name.upper()[:12].ljust(12)
+    print(f"{label} background start")
+
+    def _rand_bri() -> int:
+        raw = int(spec["base_bri"]) + random.randint(-int(spec["bri_jitter"]), int(spec["bri_jitter"]))
+        return max(8, min(255, int(scale_bri(raw))))
+
+    def _rand_rgb() -> tuple[int, int, int]:
+        return _weighted_palette_choice(spec["palette"])
+
+    try:
+        for b in bulbs:
+            rgb = _rand_rgb()
+            send_raw_rgb(b.ip, rgb[0], rgb[1], rgb[2], _rand_bri())
+        await asyncio.sleep(0.4)
+
+        while not effect_should_stop():
+            idx = random.randrange(len(bulbs))
+            rgb = _rand_rgb()
+            send_raw_rgb(bulbs[idx].ip, rgb[0], rgb[1], rgb[2], _rand_bri())
+
+            if len(bulbs) > 1 and random.random() < float(spec["follow_chance"]):
+                other = random.choice([i for i in range(len(bulbs)) if i != idx])
+                await asyncio.sleep(random.uniform(0.1, 0.8))
+                rgb = _rand_rgb()
+                send_raw_rgb(bulbs[other].ip, rgb[0], rgb[1], rgb[2], _rand_bri())
+
+            await asyncio.sleep(random.uniform(float(spec["min_wait"]), float(spec["max_wait"])))
+
+    finally:
+        clear_effect_running()
+        await close_all(bulbs)
+
+
+async def campfire_low() -> None:
+    await fireplace_organic(min_wait=8, max_wait=26, base_bri=55, bri_jitter=10, managed=True, effect_name="campfire_low")
 
 
 async def deep_ocean_organic(min_wait=6, max_wait=22, base_bri=55, bri_jitter=20, managed=True):
@@ -1660,6 +1738,16 @@ async def run_background(cmd: str, args: list[str]) -> None:
         await storm_distant()
         return
 
+    if cmd in DARK_ORGANIC_EFFECTS:
+        await dark_organic(cmd)
+        save_last_mode(cmd, active_group())
+        return
+
+    if cmd == "campfire_low":
+        await campfire_low()
+        save_last_mode("campfire_low", active_group())
+        return
+
     if cmd == "embers":
         await embers()
         save_last_mode("embers", active_group())
@@ -1734,8 +1822,8 @@ def print_help() -> None:
     print("  dim <delta>")
     print("  dim <B1|B2> <delta>")
     print("  alert [seconds]       Pulse alert (toggle on/off)")
-    print("  alert_pulse [seconds] Pulse alert (toggle on/off)")
-    print("  alert_police [seconds] Police-style alert")
+    print("  alert_pulse | alert-pulse [seconds] Pulse alert (toggle on/off)")
+    print("  alert_police | alert-police [seconds] Police-style alert")
     print("  fade <preset> <seconds>")
     print("  b1 <preset> | b2 <preset> | duo <preset1> <preset2>")
     print("  snapshot save [name] | snapshot load [name] | snapshot list")
@@ -1771,10 +1859,13 @@ async def main(argv: list[str]) -> None:
     if argv[0] == "--bg":
         if len(argv) < 2:
             raise SystemExit("Usage: lights --bg <effect> [group]")
-        bg_cmd = argv[1]
+        bg_cmd = _normalize_cmd(argv[1])
         rest = argv[2:]
         group, rest = _maybe_consume_group(rest)
         _set_active_group(group)
+        if DRY_RUN:
+            print(f"DRY_RUN      bg={bg_cmd} group={active_group() or 'all'} args={rest}")
+            return
         await run_background(bg_cmd, rest)
         return
 
@@ -1785,13 +1876,20 @@ async def main(argv: list[str]) -> None:
 
     # If user typed only a group, show status for that group
     if not argv:
+        if DRY_RUN:
+            print(f"DRY_RUN      cmd=status group={active_group() or 'all'} args=[]")
+            return
         await show_status()
         return
 
-    cmd = argv[0]
+    cmd = _normalize_cmd(argv[0])
 
     if cmd in {"help", "-h", "--help", "?"}:
         print_help()
+        return
+
+    if DRY_RUN:
+        print(f"DRY_RUN      cmd={cmd} group={active_group() or 'all'} args={argv[1:]}")
         return
 
     if cmd in {"dash", "dashboard"}:
@@ -1997,22 +2095,7 @@ async def main(argv: list[str]) -> None:
         return
 
     # ---------------- background effects ----------------
-    if cmd in {
-        "fireplace_ambient",
-        "asym_static",
-        "cozy_ambient",
-        "candle_pair",
-        "breathe_soft",
-        "focus_wave",
-        "dusk_drift",
-        "embers",
-        "bonfire",
-        "aurora",
-        "police_siren",
-        "hearth",
-        "abyss",
-        "storm_distant",
-    }:
+    if cmd in BACKGROUND_EFFECTS:
         launch_background(cmd, group_for_bg)
         save_last_mode(cmd, active_group())
         return

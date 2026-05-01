@@ -2,9 +2,12 @@
 import os, subprocess
 import paho.mqtt.client as mqtt
 
+from lights_config import LIGHTS_SCRIPT
+
 BROKER = os.getenv("MQTT_HOST", "127.0.0.1")
 PORT = int(os.getenv("MQTT_PORT", "1883"))
 TOPIC = os.getenv("MQTT_TOPIC", "lights/cmd")
+LIGHTS = os.getenv("LIGHTS_BIN", str(LIGHTS_SCRIPT))
 
 def on_message(client, userdata, msg):
     cmd = msg.payload.decode().strip()
@@ -14,7 +17,7 @@ def on_message(client, userdata, msg):
     #   warm
     #   off
     #   fade night 10
-    subprocess.run(["/home/pi/bin/lights", *cmd.split()], check=False)
+    subprocess.run([LIGHTS, *cmd.split()], check=False)
 
 c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 c.on_message = on_message

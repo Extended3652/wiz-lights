@@ -4,7 +4,9 @@ from pywizlight import wizlight
 
 import subprocess
 
-LIGHTS = "/home/pi/bin/lights"
+from lights_config import GROUPS, IPS as ALL_IPS, LIGHTS_SCRIPT, room_by_ip_lower
+
+LIGHTS = str(LIGHTS_SCRIPT)
 app = FastAPI(title="Lights API")
 
 class Cmd(BaseModel):
@@ -24,19 +26,7 @@ def status():
     rc, out = run_lights(["status"])
     return {"rc": rc, "out": out}
 
-ALL_IPS = [
-    "192.168.86.123",  # kitchen 1
-    "192.168.86.124",  # kitchen 2
-    "192.168.86.133",  # entryway 1
-    "192.168.86.134",  # entryway 2
-]
-
-ROOM_BY_IP = {
-    "192.168.86.123": "kitchen",
-    "192.168.86.124": "kitchen",
-    "192.168.86.133": "entryway",
-    "192.168.86.134": "entryway",
-}
+ROOM_BY_IP = room_by_ip_lower()
 
 @app.get("/status/json")
 async def status_json():
@@ -90,7 +80,7 @@ def off():
     rc, out = run_lights(["off"])
     return {"rc": rc, "out": out}
 
-VALID_ROOMS = {"kitchen", "entryway", "all"}
+VALID_ROOMS = set(GROUPS)
 
 @app.post("/room/{room}/toggle")
 def room_toggle(room: str):
