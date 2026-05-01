@@ -110,6 +110,7 @@ BACKGROUND_EFFECTS = {
     "afterglow",
     "campfire_low",
     "psychedelic",
+    "sleep_flow",
     "storm_distant",
     "police_siren",
 }
@@ -270,6 +271,7 @@ PRESET_RGB_HINTS = {
     "afterglow": (95, 35, 50),
     "campfire_low": (160, 70, 28),
     "psychedelic": (255, 0, 255),
+    "sleep_flow": (35, 10, 95),
 }
 
 # --------------------------------------------------
@@ -1529,6 +1531,81 @@ async def psychedelic(
         await close_all(bulbs)
 
 
+SLEEP_FLOW_COLORS = [
+    (24, 4, 80),     # deep violet
+    (8, 12, 72),     # midnight blue
+    (35, 6, 95),     # muted purple
+    (12, 26, 86),    # blue shadow
+    (48, 10, 65),    # plum
+    (6, 36, 58),     # dark teal-blue
+]
+
+
+def _soft_rgb_variant(rgb: tuple[int, int, int], spread: int = 10) -> tuple[int, int, int]:
+    return tuple(
+        max(0, min(255, channel + random.randint(-spread, spread)))
+        for channel in rgb
+    )
+
+
+def _next_bulb_index(current: int, count: int) -> int:
+    if count <= 1:
+        return 0
+    step = random.choice([1, 1, 1, 2])
+    return (current + step) % count
+
+
+async def sleep_flow(
+    min_wait: float = 1.3,
+    max_wait: float = 3.2,
+    base_bri: int = 38,
+    bri_jitter: int = 10,
+) -> None:
+    bulbs = await get_bulbs()
+    if not bulbs:
+        return
+
+    set_effect_running("sleep_flow")
+    print("SLEEP_FLOW    background start")
+    palette_idx = random.randrange(len(SLEEP_FLOW_COLORS))
+    bulb_idx = random.randrange(len(bulbs))
+    current_rgb = SLEEP_FLOW_COLORS[palette_idx]
+
+    def _rand_bri(offset: int = 0) -> int:
+        raw = int(base_bri) + int(offset) + random.randint(-int(bri_jitter), int(bri_jitter))
+        return scale_bri(max(12, min(80, raw)))
+
+    def _send(bulb, rgb: tuple[int, int, int], offset: int = 0) -> None:
+        send_raw_rgb(bulb.ip, rgb[0], rgb[1], rgb[2], _rand_bri(offset))
+
+    try:
+        for i, bulb in enumerate(bulbs):
+            seed_rgb = _soft_rgb_variant(current_rgb, spread=8)
+            _send(bulb, seed_rgb, offset=-(i % 3))
+            await asyncio.sleep(0.25)
+
+        while not effect_should_stop():
+            if random.random() < 0.22:
+                palette_idx = (palette_idx + 1) % len(SLEEP_FLOW_COLORS)
+                current_rgb = SLEEP_FLOW_COLORS[palette_idx]
+
+            bulb_idx = _next_bulb_index(bulb_idx, len(bulbs))
+            rgb = _soft_rgb_variant(current_rgb, spread=10)
+            _send(bulbs[bulb_idx], rgb)
+
+            if len(bulbs) > 1 and random.random() < 0.45:
+                await asyncio.sleep(random.uniform(0.25, 0.7))
+                bulb_idx = _next_bulb_index(bulb_idx, len(bulbs))
+                rgb = _soft_rgb_variant(current_rgb, spread=10)
+                _send(bulbs[bulb_idx], rgb, offset=-3)
+
+            await asyncio.sleep(random.uniform(float(min_wait), float(max_wait)))
+
+    finally:
+        clear_effect_running()
+        await close_all(bulbs)
+
+
 def _aurora_rand_rgb() -> tuple[int, int, int]:
     roll = random.random()
     if roll < 0.50:
@@ -1811,6 +1888,11 @@ async def run_background(cmd: str, args: list[str]) -> None:
     if cmd == "psychedelic":
         await psychedelic()
         save_last_mode("psychedelic", active_group())
+        return
+
+    if cmd == "sleep_flow":
+        await sleep_flow()
+        save_last_mode("sleep_flow", active_group())
         return
 
     if cmd in DARK_ORGANIC_EFFECTS:
