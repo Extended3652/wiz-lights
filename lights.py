@@ -109,6 +109,7 @@ BACKGROUND_EFFECTS = {
     "blue_coals",
     "afterglow",
     "campfire_low",
+    "psychedelic",
     "storm_distant",
     "police_siren",
 }
@@ -268,6 +269,7 @@ PRESET_RGB_HINTS = {
     "blue_coals": (10, 35, 110),
     "afterglow": (95, 35, 50),
     "campfire_low": (160, 70, 28),
+    "psychedelic": (255, 0, 255),
 }
 
 # --------------------------------------------------
@@ -1459,6 +1461,74 @@ async def storm_distant(base_bri: int = 70) -> None:
         clear_effect_running()
         await close_all(bulbs)
 
+
+PSYCHEDELIC_COLORS = [
+    (255, 0, 190),    # hot magenta
+    (130, 0, 255),    # electric violet
+    (0, 80, 255),     # saturated blue
+    (0, 255, 210),    # cyan
+    (0, 255, 70),     # laser green
+    (255, 255, 0),    # yellow
+    (255, 90, 0),     # orange
+    (255, 0, 45),     # red-pink
+]
+
+
+def _psychedelic_rand_rgb(previous: tuple[int, int, int] | None = None) -> tuple[int, int, int]:
+    choices = [rgb for rgb in PSYCHEDELIC_COLORS if rgb != previous]
+    return random.choice(choices)
+
+
+async def psychedelic(
+    min_wait: float = 0.35,
+    max_wait: float = 1.15,
+    base_bri: int = 190,
+    bri_jitter: int = 45,
+) -> None:
+    bulbs = await get_bulbs()
+    if not bulbs:
+        return
+
+    set_effect_running("psychedelic")
+    print("PSYCHEDELIC   background start")
+
+    last_colors: dict[str, tuple[int, int, int]] = {}
+
+    def _rand_bri() -> int:
+        raw = int(base_bri) + random.randint(-int(bri_jitter), int(bri_jitter))
+        return scale_bri(max(80, min(255, raw)))
+
+    def _send(bulb, rgb: tuple[int, int, int]) -> None:
+        last_colors[bulb.ip] = rgb
+        send_raw_rgb(bulb.ip, rgb[0], rgb[1], rgb[2], _rand_bri())
+
+    try:
+        for i, bulb in enumerate(bulbs):
+            _send(bulb, PSYCHEDELIC_COLORS[i % len(PSYCHEDELIC_COLORS)])
+        await asyncio.sleep(0.35)
+
+        while not effect_should_stop():
+            if len(bulbs) > 1 and random.random() < 0.28:
+                random.shuffle(bulbs)
+                for bulb in bulbs:
+                    _send(bulb, _psychedelic_rand_rgb(last_colors.get(bulb.ip)))
+                    await asyncio.sleep(random.uniform(0.04, 0.16))
+            else:
+                bulb = random.choice(bulbs)
+                _send(bulb, _psychedelic_rand_rgb(last_colors.get(bulb.ip)))
+
+                if len(bulbs) > 1 and random.random() < 0.65:
+                    other = random.choice([b for b in bulbs if b.ip != bulb.ip])
+                    await asyncio.sleep(random.uniform(0.08, 0.25))
+                    _send(other, _psychedelic_rand_rgb(last_colors.get(other.ip)))
+
+            await asyncio.sleep(random.uniform(float(min_wait), float(max_wait)))
+
+    finally:
+        clear_effect_running()
+        await close_all(bulbs)
+
+
 def _aurora_rand_rgb() -> tuple[int, int, int]:
     roll = random.random()
     if roll < 0.50:
@@ -1736,6 +1806,11 @@ async def run_background(cmd: str, args: list[str]) -> None:
 
     if cmd == "storm_distant":
         await storm_distant()
+        return
+
+    if cmd == "psychedelic":
+        await psychedelic()
+        save_last_mode("psychedelic", active_group())
         return
 
     if cmd in DARK_ORGANIC_EFFECTS:
