@@ -2,6 +2,7 @@
 
 import asyncio
 import curses
+import os
 import time
 import subprocess
 import threading
@@ -54,6 +55,9 @@ class CmdRunner:
 
         cmd = [self.lights_cmd] + args
         self.current_cmd = " ".join(cmd)
+        env = dict(os.environ)
+        env["LIGHTS_SOURCE"] = "dashboard"
+        env["LIGHTS_DASHBOARD_ACTION"] = " ".join(args)
 
         try:
             self.proc = subprocess.Popen(
@@ -62,6 +66,7 @@ class CmdRunner:
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
+                env=env,
             )
         except Exception as e:
             self.running = False
@@ -107,6 +112,9 @@ class CmdRunner:
         """
         cmd = [self.lights_cmd] + args
         cmd_str = " ".join(cmd)
+        env = dict(os.environ)
+        env["LIGHTS_SOURCE"] = "dashboard"
+        env["LIGHTS_DASHBOARD_ACTION"] = " ".join(args)
 
         def _run():
             try:
@@ -115,6 +123,7 @@ class CmdRunner:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    env=env,
                 )
                 assert p.stdout is not None
                 for line in p.stdout:
@@ -170,6 +179,34 @@ def init_multicolor_from_lights() -> None:
 
 
 VIRTUAL_MENU_ACTIONS: Dict[str, List[str]] = {
+    "cook": ["cook"],
+}
+
+MENU_SECTION_BY_NAME = {
+    "cook": "Kitchen",
+    "warm": "Essentials",
+    "soft": "Essentials",
+    "bright": "Essentials",
+    "cool": "Essentials",
+    "night": "Essentials",
+    "movie": "Essentials",
+    "tiffany": "Essentials",
+    "golden_white": "Scenes",
+    "daylight": "Scenes",
+    "fireplace": "Scenes",
+    "candlelight": "Scenes",
+    "focus": "Scenes",
+    "relax": "Scenes",
+    "embers": "Effects",
+    "hearth": "Effects",
+    "breathe": "Effects",
+    "aurora": "Effects",
+    "storm_distant": "Effects",
+    "moonlight": "Effects",
+    "deep_space": "Effects",
+    "lava_lamp": "Effects",
+    "police_siren": "Alerts",
+    "alert_pulse": "Alerts",
 }
 
 # -----------------------------
@@ -366,12 +403,21 @@ def build_alt_segments(text: str, rgb1, rgb2, colors_enabled: bool):
 # -----------------------------
 
 def build_preset_list() -> List[str]:
+    visible = getattr(L, "VISIBLE_MENU_ITEMS", None)
+    if isinstance(visible, (list, tuple)):
+        return [str(name) for name in visible if str(name)]
+
     items = set(L.PRESETS.keys())
     try:
         items |= set(getattr(L, "BACKGROUND_EFFECTS", set()))
     except Exception:
         pass
+    try:
+        items |= set(getattr(L, "CUSTOM_SCENES", set()))
+    except Exception:
+        pass
     items |= set(VIRTUAL_MENU_ACTIONS.keys())
+    items.discard("romance")
     return sorted(items, key=lambda s: s.lower())
 
 async def fetch_status() -> List[Dict[str, Any]]:
@@ -596,6 +642,7 @@ def draw_help_line(stdscr, y: int, w: int, colors_enabled: bool) -> None:
         ("TAB", "target"),
         ("o", "off"),
         ("t", "toggle"),
+        ("c", "cook"),
         ("f", "fade (3s)"),
         ("1", "alert"),
         ("2", "alert-police"),
@@ -693,7 +740,7 @@ def draw_screen(stdscr, status_rows, presets, sel_idx, last_mode, msg, colors_en
 
     if right_w > 0:
         x0 = left_w + 1
-        label = f"Presets (A-Z)  Target={target}"
+        label = f"Overview  Target={target}"
         if colors_enabled:
             stdscr.addstr(2, x0, label[:right_w], cpair(2))
         else:
@@ -708,11 +755,25 @@ def draw_screen(stdscr, status_rows, presets, sel_idx, last_mode, msg, colors_en
         end = min(len(presets), start + max_lines)
 
         y = 4
+        last_section = None
         for i in range(start, end):
             if y >= h - 7:
                 break
 
             name = presets[i]
+            section = MENU_SECTION_BY_NAME.get(name, "Other")
+            if section != last_section and y < h - 7:
+                heading = f"  {section}"
+                heading = heading[:right_w].ljust(right_w)
+                if colors_enabled:
+                    stdscr.addstr(y, x0, heading, cpair(2) | curses.A_BOLD)
+                else:
+                    stdscr.addstr(y, x0, heading)
+                y += 1
+                last_section = section
+                if y >= h - 7:
+                    break
+
             prefix = ">" if i == sel_idx else " "
             line = f"{prefix} {name}"
             line = line[:right_w].ljust(right_w)
@@ -794,6 +855,7 @@ def dashboard(stdscr):
         ("entryway", "B2"),
     ]
     target_idx = 0
+    off_confirm_until = 0.0
 
     def with_group(args: List[str]) -> List[str]:
         g, _t = targets[target_idx]
@@ -892,12 +954,23 @@ def dashboard(stdscr):
             continue
 
         if ch in (ord("o"), ord("O")):
+            now = time.time()
+            if now > off_confirm_until:
+                off_confirm_until = now + 3.0
+                msg = "Press o again to turn lights off"
+                continue
+            off_confirm_until = 0.0
             runner.start(with_group(["off"]))
             msg = runner.last_line
             continue
 
         if ch in (ord("t"), ord("T")):
             runner.start(with_group(["toggle"]))
+            msg = runner.last_line
+            continue
+
+        if ch in (ord("c"), ord("C")):
+            runner.start(["cook"])
             msg = runner.last_line
             continue
 

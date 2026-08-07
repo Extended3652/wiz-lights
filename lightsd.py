@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -25,8 +26,12 @@ def log(msg):
 
 # ---------------- ACTIONS ----------------
 
-def run_lights(args):
-    p = subprocess.run([LIGHTS, *args], capture_output=True, text=True, check=False)
+def run_lights(args, action: str | None = None):
+    env = dict(os.environ)
+    env["LIGHTS_SOURCE"] = "daemon"
+    if action:
+        env["LIGHTS_DAEMON_ACTION"] = action
+    p = subprocess.run([LIGHTS, *args], capture_output=True, text=True, check=False, env=env)
     out = ((p.stdout or "") + (p.stderr or "")).strip()
     if out:
         log(out)
@@ -47,11 +52,13 @@ async def daemon_loop():
                 action = data.get("action")
 
                 if action == "fade":
-                    run_lights(["fade", data["mode"], str(data["seconds"])])
+                    run_lights(["fade", data["mode"], str(data["seconds"])], action="fade")
                 elif action == "set":
-                    run_lights([data["mode"]])
+                    run_lights([data["mode"]], action="set")
                 elif action == "off":
-                    run_lights(["off"])
+                    run_lights(["off"], action="off")
+                elif action == "cook":
+                    run_lights(["cook"], action="cook")
 
         except Exception as e:
             log(f"ERROR {e}")

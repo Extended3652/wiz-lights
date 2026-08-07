@@ -17,7 +17,10 @@ def on_message(client, userdata, msg):
     #   warm
     #   off
     #   fade night 10
-    subprocess.run([LIGHTS, *cmd.split()], check=False)
+    env = dict(os.environ)
+    env["LIGHTS_SOURCE"] = "mqtt"
+    env["LIGHTS_MQTT_TOPIC"] = TOPIC
+    subprocess.run([LIGHTS, *cmd.split()], check=False, env=env)
 
 c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 c.on_message = on_message

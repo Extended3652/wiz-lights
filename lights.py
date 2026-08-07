@@ -1,13 +1,18 @@
 #!/home/pi/venvs/wiz/bin/python
 
 import asyncio
+import colorsys
+import fcntl
 import json
+import math
 import os
 import random
 import signal
 import socket
 import subprocess
 import sys
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from pywizlight import PilotBuilder, wizlight
@@ -80,7 +85,27 @@ def _snapshot_path(name: str) -> Path:
 STATE_FILE = STATE_DIR / "last_mode"
 EFFECT_FILE = STATE_DIR / "effect_running"
 EFFECT_BRI_FILE = STATE_DIR / "effect_bri"
+PENDING_MODE_FILE = STATE_DIR / "pending_mode"
+AUDIT_LOG_FILE = STATE_DIR / "audit.log"
+EFFECT_LOG_FILE = STATE_DIR / "effects.log"
+PENDING_MODE_TTL_SEC = 8.0
+COOK_OVERRIDE_FILE = STATE_DIR / "cook_override.json"
+COOK_DEBOUNCE_FILE = STATE_DIR / "cook_last_press"
+COOK_LOCK_FILE = STATE_DIR / "cook.lock"
+COOK_LOG_FILE = STATE_DIR / "cook.log"
+COOK_MODE = "cook_dim"
 DRY_RUN = os.getenv("LIGHTS_DRY_RUN", "").lower() in {"1", "true", "yes", "on"}
+MINOTAUR_SOURCE = "wiz_lights"
+MINOTAUR_CORE_DIR = Path(os.environ.get("MINOTAUR_CORE_DIR", "/mnt/ssd/home-pi/projects/minotaur_core"))
+MINOTAUR_CLI = MINOTAUR_CORE_DIR / ".venv" / "bin" / "minotaur-core"
+MINOTAUR_HTTP_HELPER = MINOTAUR_CORE_DIR / "scripts" / "emit_event.py"
+MINOTAUR_ALLOWED_EVENTS = {
+    "lights.scene.changed",
+    "lights.effect.started",
+    "lights.effect.stopped",
+    "lights.off",
+    "lights.error",
+}
 
 CYCLE_ORDER = [
     "warm",
@@ -99,7 +124,9 @@ BACKGROUND_EFFECTS = {
     "aurora",
     "cozy_ambient",
     "candle_pair",
+    "breathe",
     "breathe_soft",
+    "sleep_breathe",
     "focus_wave",
     "dusk_drift",
     "hearth",
@@ -109,11 +136,287 @@ BACKGROUND_EFFECTS = {
     "blue_coals",
     "afterglow",
     "campfire_low",
+    "lava_lamp",
     "psychedelic",
     "sleep_flow",
     "storm_distant",
     "police_siren",
+    "neon_rain",
+    "deep_space",
+    "moonlight",
+    "synthwave",
+    "biohazard",
+    "underwater_ruins",
+    "arc_reactor",
 }
+
+COMMAND_ALIASES = {
+    "minotaur_breath": "breathe",
+}
+
+VISIBLE_MENU_ITEMS = [
+    "cook",
+    "warm",
+    "soft",
+    "bright",
+    "cool",
+    "night",
+    "movie",
+    "tiffany",
+    "golden_white",
+    "daylight",
+    "fireplace",
+    "candlelight",
+    "focus",
+    "relax",
+    "embers",
+    "hearth",
+    "breathe",
+    "aurora",
+    "storm_distant",
+    "moonlight",
+    "deep_space",
+    "lava_lamp",
+    "police_siren",
+    "alert_pulse",
+]
+
+CUSTOM_SCENES = {
+    "bedtime_flow": {
+        "result_mode": "off",
+        "intro": 4.0,
+        "interval": 0.25,
+        "steps": [
+            {"r": 0, "g": 0, "b": 0, "c": 0, "w": 255, "brightness": 192, "hold": 20, "fade": 10},
+            {"r": 255, "g": 50, "b": 0, "c": 0, "w": 127, "brightness": 192, "hold": 0, "fade": 15},
+            {"r": 255, "g": 25, "b": 0, "c": 0, "w": 0, "brightness": 192, "hold": 0, "fade": 15},
+            {"r": 255, "g": 0, "b": 0, "c": 0, "w": 0, "brightness": 192, "hold": 10, "fade": 30},
+            {"r": 0, "g": 0, "b": 0, "c": 0, "w": 0, "brightness": 0, "hold": 0, "fade": 0},
+        ],
+    },
+    "sunrise_flow": {
+        "result_mode": "bright",
+        "intro": 8.0,
+        "interval": 0.25,
+        "steps": [
+            {"r": 255, "g": 0, "b": 0, "c": 20, "w": 0, "brightness": 10, "hold": 15, "fade": 10},
+            {"r": 255, "g": 0, "b": 0, "c": 20, "w": 0, "brightness": 200, "hold": 10, "fade": 10},
+            {"r": 255, "g": 0, "b": 100, "c": 20, "w": 0, "brightness": 192, "hold": 5, "fade": 10},
+            {"r": 255, "g": 0, "b": 200, "c": 127, "w": 0, "brightness": 192, "hold": 0, "fade": 10},
+            {"r": 100, "g": 100, "b": 255, "c": 255, "w": 255, "brightness": 255, "hold": 0, "fade": 0},
+        ],
+    },
+    "golden_hour_loop": {
+        "intro": 5.0,
+        "interval": 0.35,
+        "loop": True,
+        "color_space": "hsv",
+        "per_bulb_offset": 0.8,
+        "jitter": {"r": 5, "g": 4, "b": 5, "c": 6, "w": 8, "brightness": 4},
+        "steps": [
+            {"r": 255, "g": 142, "b": 34, "c": 0, "w": 90, "brightness": 95, "hold": [8, 16], "fade": [16, 28]},
+            {"r": 255, "g": 84, "b": 78, "c": 0, "w": 50, "brightness": 82, "hold": [6, 12], "fade": [18, 30]},
+            {"r": 255, "g": 188, "b": 112, "c": 12, "w": 170, "brightness": 105, "hold": [8, 18], "fade": [18, 32]},
+            {"r": 255, "g": 116, "b": 48, "c": 0, "w": 125, "brightness": 88, "hold": [8, 14], "fade": [16, 28]},
+        ],
+    },
+    "storm": {
+        "intro": 3.0,
+        "interval": 0.18,
+        "loop": True,
+        "jitter": {"r": 3, "g": 4, "b": 14, "c": 8, "brightness": 8},
+        "steps": [
+            {"r": 5, "g": 12, "b": 56, "c": 22, "w": 0, "brightness": 30, "hold": [7, 18], "fade": [2.0, 4.5]},
+            {"r": 210, "g": 230, "b": 255, "c": 255, "w": 40, "brightness": 255, "hold": [0.04, 0.12], "fade": [0.04, 0.12], "chance": 0.55, "target": "random"},
+            {"r": 12, "g": 20, "b": 70, "c": 45, "w": 0, "brightness": 42, "hold": [0.08, 0.35], "fade": [0.08, 0.22], "target": "random"},
+            {"r": 245, "g": 250, "b": 255, "c": 255, "w": 65, "brightness": 255, "hold": [0.03, 0.08], "fade": [0.02, 0.08], "chance": 0.32, "target": "random"},
+            {"r": 4, "g": 10, "b": 48, "c": 18, "w": 0, "brightness": 26, "hold": [5, 14], "fade": [0.4, 1.4]},
+        ],
+    },
+    "sparkle_warm": {
+        "intro": 4.0,
+        "interval": 0.2,
+        "loop": True,
+        "jitter": {"r": 8, "g": 6, "b": 4, "w": 10, "brightness": 7},
+        "steps": [
+            {"r": 255, "g": 126, "b": 38, "c": 0, "w": 135, "brightness": 56, "hold": [3, 8], "fade": [1.8, 4.0]},
+            {"r": 255, "g": 198, "b": 96, "c": 0, "w": 210, "brightness": 116, "hold": [0.08, 0.22], "fade": [0.08, 0.2], "chance": 0.72, "target": "random"},
+            {"r": 255, "g": 116, "b": 30, "c": 0, "w": 120, "brightness": 48, "hold": [1.5, 5.5], "fade": [0.4, 1.3]},
+            {"r": 255, "g": 176, "b": 68, "c": 0, "w": 185, "brightness": 86, "hold": [0.05, 0.18], "fade": [0.05, 0.18], "chance": 0.45, "target": "random"},
+            {"r": 255, "g": 104, "b": 26, "c": 0, "w": 110, "brightness": 50, "hold": [2.5, 7.0], "fade": [0.8, 2.2]},
+        ],
+    },
+    "meow_wolf": {
+        "intro": 4.0,
+        "interval": 0.2,
+        "loop": True,
+        "color_space": "hsv",
+        "per_bulb_offset": 0.35,
+        "jitter": {"r": 8, "g": 7, "b": 8, "c": 6, "w": 8, "brightness": 6},
+        "steps": [
+            {"r": 255, "g": 110, "b": 210, "c": 18, "w": 20, "brightness": 105, "hold": [4, 8], "fade": [10, 16]},
+            {"r": 140, "g": 255, "b": 235, "c": 48, "w": 40, "brightness": 125, "hold": [0.08, 0.18], "fade": [0.15, 0.45], "chance": 0.85, "target": "random"},
+            {"r": 255, "g": 220, "b": 120, "c": 24, "w": 150, "brightness": 112, "hold": [2, 5], "fade": [8, 14]},
+            {"r": 170, "g": 120, "b": 255, "c": 14, "w": 30, "brightness": 100, "hold": [3, 7], "fade": [10, 18]},
+            {"r": 255, "g": 160, "b": 80, "c": 8, "w": 60, "brightness": 110, "hold": [2, 6], "fade": [8, 14]},
+        ],
+    },
+}
+
+
+def _event_room_name(group: str | None = None) -> str:
+    g = active_group() if group is None else group
+    return g or "all"
+
+
+def _safe_event_metadata(**metadata) -> dict[str, str]:
+    allowed = {"scene_name", "room_name", "target_name", "command", "mode"}
+    safe: dict[str, str] = {}
+    for key, value in metadata.items():
+        if key not in allowed or value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            safe[key] = text[:120]
+    return safe
+
+
+def emit_minotaur_event(
+    event_type: str,
+    title: str,
+    message: str = "",
+    *,
+    metadata: dict[str, str] | None = None,
+    severity: str = "info",
+) -> None:
+    """Best-effort Minotaur emission that must never block light commands."""
+    if event_type not in MINOTAUR_ALLOWED_EVENTS:
+        return
+    metadata_json = json.dumps(metadata or {}, sort_keys=True)
+    emitters = [
+        ("cli", MINOTAUR_CLI),
+        ("http", MINOTAUR_HTTP_HELPER),
+    ]
+    for kind, helper in emitters:
+        if not helper.exists():
+            continue
+        if kind == "cli":
+            command = [
+                str(helper),
+                "emit",
+                "--source",
+                MINOTAUR_SOURCE,
+                "--event-type",
+                event_type,
+                "--title",
+                title,
+                "--message",
+                message,
+                "--severity",
+                severity,
+                "--tags",
+                "lights,wiz",
+                "--metadata",
+                metadata_json,
+            ]
+        else:
+            command = [
+                str(helper),
+                "--source",
+                MINOTAUR_SOURCE,
+                "--event-type",
+                event_type,
+                "--title",
+                title,
+                "--message",
+                message,
+                "--severity",
+                severity,
+                "--tags",
+                "lights,wiz",
+                "--metadata",
+                metadata_json,
+            ]
+        try:
+            subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception:
+            return
+        return
+
+
+def emit_scene_changed(scene_name: str, *, command: str | None = None, target_name: str | None = None) -> None:
+    room = _event_room_name()
+    emit_minotaur_event(
+        "lights.scene.changed",
+        "WiZ scene changed",
+        f"Set {scene_name} for {room}.",
+        metadata=_safe_event_metadata(
+            scene_name=scene_name,
+            room_name=room,
+            target_name=target_name,
+            command=command,
+            mode=scene_name,
+        ),
+    )
+
+
+def emit_effect_started(effect_name: str, *, command: str | None = None) -> None:
+    room = _event_room_name()
+    emit_minotaur_event(
+        "lights.effect.started",
+        "WiZ effect started",
+        f"Started {effect_name} for {room}.",
+        metadata=_safe_event_metadata(
+            scene_name=effect_name,
+            room_name=room,
+            command=command,
+            mode=effect_name,
+        ),
+    )
+
+
+def emit_effect_stopped(effect_name: str | None = None, *, command: str = "stop") -> None:
+    room = _event_room_name()
+    emit_minotaur_event(
+        "lights.effect.stopped",
+        "WiZ effect stopped",
+        f"Stopped light effects for {room}.",
+        metadata=_safe_event_metadata(
+            scene_name=effect_name,
+            room_name=room,
+            command=command,
+            mode=effect_name,
+        ),
+    )
+
+
+def emit_lights_off(*, command: str = "off") -> None:
+    room = _event_room_name()
+    emit_minotaur_event(
+        "lights.off",
+        "WiZ lights off",
+        f"Turned lights off for {room}.",
+        metadata=_safe_event_metadata(room_name=room, command=command, mode="off"),
+    )
+
+
+def emit_lights_error(command: str, error: str) -> None:
+    emit_minotaur_event(
+        "lights.error",
+        "WiZ lights error",
+        error[:200],
+        metadata=_safe_event_metadata(
+            room_name=_event_room_name(),
+            command=command,
+            mode=command,
+        ),
+        severity="error",
+    )
 
 # --------------------------------------------------
 # PRESETS
@@ -135,7 +438,14 @@ PRESETS = {
     "movie": {"brightness": 60, "pilot": PilotBuilder(brightness=60, rgb=(255, 180, 120))},
     "tiffany_cream": {"brightness": 100, "pilot": PilotBuilder(brightness=100, rgb=(248, 229, 201))},
     "tiffany_honey": {"brightness": 100, "pilot": PilotBuilder(brightness=100, rgb=(241, 193, 89))},
-    "tiffany": {"brightness": 160, "duo": ("tiffany_cream", "tiffany_honey")},
+    "tiffany": {
+        "brightness": 95,
+        "pilot": PilotBuilder(
+            brightness=95,
+            rgb=(180, 145, 95)
+        )
+    },
+    "cook_dim": {"brightness": 111, "pilot": PilotBuilder(brightness=111, colortemp=2700)},
 }
 
 # --------------------------------------------------
@@ -254,8 +564,10 @@ PRESET_RGB_HINTS = {
 
     # Background effects (menu color hints)
     "embers": (255, 115, 35),
-    "hearth": (255, 150, 70),
+    "hearth": (255, 190, 110),
     "fireplace_ambient": (255, 125, 45),
+    "breathe": (255, 130, 55),
+    "sleep_breathe": (180, 75, 35),
     "storm_distant": (150, 165, 190),
     "cozy_ambient": (255, 175, 95),
     "candle_pair": (255, 170, 80),
@@ -270,8 +582,17 @@ PRESET_RGB_HINTS = {
     "blue_coals": (10, 35, 110),
     "afterglow": (95, 35, 50),
     "campfire_low": (160, 70, 28),
+    "lava_lamp": (95, 0, 120),
     "psychedelic": (255, 0, 255),
     "sleep_flow": (35, 10, 95),
+    "neon_rain": (0, 220, 255),
+    "deep_space": (45, 20, 120),
+    "moonlight": (165, 205, 255),
+    "synthwave": (255, 0, 180),
+    "biohazard": (90, 255, 30),
+    "underwater_ruins": (0, 125, 150),
+    "arc_reactor": (80, 235, 255),
+    "meow_wolf": (255, 170, 220),
 }
 
 # --------------------------------------------------
@@ -314,6 +635,13 @@ def _effect_bri_file(group: str | None) -> Path:
     return STATE_DIR / "effect_bri_all"
 
 
+def _safe_unlink(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def effect_is_running(group: str | None = None) -> bool:
     g = active_group() if group is None else group
     ef = _effect_file(g)
@@ -328,7 +656,7 @@ def effect_is_running(group: str | None = None) -> bool:
     except Exception:
         pass
 
-    ef.unlink(missing_ok=True)
+    _safe_unlink(ef)
     return False
 
 
@@ -337,14 +665,20 @@ def set_effect_running(name: str, group: str | None = None) -> None:
     ef = _effect_file(g)
     bf = _effect_bri_file(g)
 
-    ef.write_text(f"{name}\n{os.getpid()}\n")
-    if not bf.exists():
-        bf.write_text("255")
+    try:
+        ef.write_text(f"{name}\n{os.getpid()}\n")
+    except OSError:
+        pass
+    try:
+        if not bf.exists():
+            bf.write_text("255")
+    except OSError:
+        pass
 
 
 def clear_effect_running(group: str | None = None) -> None:
     g = active_group() if group is None else group
-    _effect_file(g).unlink(missing_ok=True)
+    _safe_unlink(_effect_file(g))
 
 
 def load_effect_bri(default: int = 255, group: str | None = None) -> int:
@@ -363,7 +697,10 @@ def save_effect_bri(v: int, group: str | None = None) -> int:
     g = active_group() if group is None else group
     bf = _effect_bri_file(g)
     v = max(1, min(255, int(v)))
-    bf.write_text(str(v))
+    try:
+        bf.write_text(str(v))
+    except OSError:
+        pass
     return v
 
 
@@ -374,6 +711,28 @@ def effect_scale(group: str | None = None) -> float:
 def scale_bri(b: float, group: str | None = None) -> int:
     s = effect_scale(group=group)
     return max(1, min(255, int(round(float(b) * s))))
+
+
+def scale_scene_bri(b: float, group: str | None = None) -> int:
+    raw = max(0, min(255, int(round(float(b)))))
+    if raw <= 0:
+        return 0
+    effect_group = effect_group_affecting_target(group)
+    if effect_group is None:
+        return raw
+    s = effect_scale(group=effect_group)
+    return max(1, min(255, int(round(raw * s))))
+
+
+def dim_running_effect(delta: int, group: str | None = None) -> bool:
+    effect_group = effect_group_affecting_target(group)
+    if effect_group is None:
+        return False
+
+    cur = load_effect_bri(255, group=effect_group)
+    new = save_effect_bri(cur + int(delta), group=effect_group)
+    print(f"EFFECT_DIM    group={effect_group or 'all'} bri={new}")
+    return True
 
 
 def stop_running_effect(group: str | None = None) -> None:
@@ -395,9 +754,21 @@ def stop_running_effect(group: str | None = None) -> None:
                     os.kill(pid, signal.SIGTERM)
                 except Exception:
                     pass
+                # Give background effects a brief window to exit cleanly so a
+                # replacement preset/scene does not get immediately overwritten.
+                deadline = time.monotonic() + 0.6
+                while time.monotonic() < deadline:
+                    if not _pid_alive(pid):
+                        break
+                    time.sleep(0.03)
+                if _pid_alive(pid):
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except Exception:
+                        pass
         except Exception:
             pass
-        ef.unlink(missing_ok=True)
+        _safe_unlink(ef)
 
 
 def effect_should_stop(group: str | None = None) -> bool:
@@ -427,6 +798,34 @@ def load_running_effect_name(group: str | None = None) -> str | None:
     except Exception:
         return None
 
+
+def load_effect_affecting_target(group: str | None = None) -> str | None:
+    g = active_group() if group is None else group
+    running = load_running_effect_name(g)
+    if running:
+        return running
+    if g and g != "all":
+        return load_running_effect_name("all")
+    return None
+
+
+def effect_group_affecting_target(group: str | None = None) -> str | None:
+    g = active_group() if group is None else group
+    if effect_is_running(g):
+        return g or "all"
+    if g and g != "all" and effect_is_running("all"):
+        return "all"
+    return None
+
+
+def stop_effects_affecting_target(group: str | None = None) -> None:
+    g = active_group() if group is None else group
+    if g and g != "all":
+        stop_running_effect("all")
+        stop_running_effect(g)
+        return
+    stop_running_effect(None)
+
 # --------------------------------------------------
 # STATE HELPERS
 # --------------------------------------------------
@@ -439,7 +838,10 @@ def _last_mode_file(group: str | None) -> Path:
 
 def save_last_mode(mode: str, group: str | None = None) -> None:
     path = _last_mode_file(group)
-    path.write_text(mode)
+    try:
+        path.write_text(mode)
+    except OSError:
+        pass
 
 
 def load_last_mode(group: str | None = None) -> str | None:
@@ -447,6 +849,138 @@ def load_last_mode(group: str | None = None) -> str | None:
     if path.exists():
         return path.read_text().strip()
     return None
+
+
+def save_pending_mode(mode: str, group: str | None = None) -> None:
+    g = group if group is not None else active_group()
+    try:
+        PENDING_MODE_FILE.write_text(f"{mode}\n{time.time()}\n{g or 'all'}\n")
+    except Exception:
+        pass
+
+
+def clear_pending_mode() -> None:
+    try:
+        PENDING_MODE_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def load_pending_mode() -> str | None:
+    try:
+        lines = PENDING_MODE_FILE.read_text().splitlines()
+    except Exception:
+        return None
+
+    if len(lines) < 2:
+        PENDING_MODE_FILE.unlink(missing_ok=True)
+        return None
+
+    mode = lines[0].strip()
+    try:
+        stamp = float(lines[1].strip())
+    except Exception:
+        PENDING_MODE_FILE.unlink(missing_ok=True)
+        return None
+
+    if not mode or time.time() - stamp > PENDING_MODE_TTL_SEC:
+        PENDING_MODE_FILE.unlink(missing_ok=True)
+        return None
+
+    return mode
+
+
+def load_last_mode_for_target(group: str | None = None) -> str | None:
+    g = active_group() if group is None else group
+    mode = load_last_mode(g)
+    if mode:
+        return mode
+    if g and g != "all":
+        return load_last_mode(None)
+    return None
+
+
+def target_power_state(target_ips: list[str] | None = None, timeout: float = 0.18) -> bool | None:
+    """
+    Return True if any reachable bulb is on, False if reachable bulbs are all off,
+    or None if no bulbs responded.
+    """
+    ips = target_ips if target_ips is not None else _target_ips()
+    saw_response = False
+
+    for ip in ips:
+        result = get_pilot_raw(ip, timeout)
+        if result is None:
+            continue
+
+        saw_response = True
+        state = result.get("result", {}).get("state")
+        if state:
+            return True
+
+    if saw_response:
+        return False
+    return None
+
+
+def current_mode_names() -> list[str]:
+    pending = load_pending_mode()
+    if pending == "off":
+        return [pending]
+    if pending == "cook" and not COOK_OVERRIDE_FILE.exists():
+        pending = None
+    if COOK_OVERRIDE_FILE.exists():
+        return ["cook"]
+
+    def _read_running_name(group: str | None) -> str | None:
+        path = _effect_file(group)
+        try:
+            lines = path.read_text().splitlines()
+        except Exception:
+            return None
+
+        name = lines[0].strip() if lines else ""
+        if not name:
+            return None
+
+        try:
+            pid = int(lines[1]) if len(lines) > 1 else None
+        except Exception:
+            pid = None
+
+        if pid and not _pid_alive(pid):
+            return None
+        return name
+
+    names: list[str] = []
+    groups: list[str | None] = [None]
+    groups.extend(g for g in GROUPS.keys() if g != "all")
+
+    for group in groups:
+        name = _read_running_name(group)
+        if name and name not in names:
+            names.append(name)
+
+    if names:
+        return names
+
+    try:
+        power_state = target_power_state()
+    except OSError:
+        power_state = None
+
+    if power_state is False:
+        return ["off"]
+    if pending:
+        return [pending]
+    if power_state is None:
+        return ["unknown"]
+
+    for group in groups:
+        name = load_last_mode(group)
+        if name and name not in BACKGROUND_EFFECTS and name not in CUSTOM_SCENES:
+            return [name]
+    return ["on"]
 
 # --------------------------------------------------
 # CORE HELPERS
@@ -469,6 +1003,19 @@ def _brightness_to_dimming_percent(brightness_0_255: int) -> int:
     return max(1, min(100, pct))
 
 
+def _dimming_percent_to_brightness(dimming: int | None) -> int:
+    if dimming is None:
+        return 0
+    pct = max(0, min(100, int(dimming)))
+    return max(0, min(255, int(round((pct / 100) * 255))))
+
+
+def _clamp_channel(value: int | float | None) -> int:
+    if value is None:
+        return 0
+    return max(0, min(255, int(round(float(value)))))
+
+
 def send_raw_scene(ip: str, scene_id: int, brightness_0_255: int) -> None:
     dimming = _brightness_to_dimming_percent(brightness_0_255)
     payload = {
@@ -477,6 +1024,42 @@ def send_raw_scene(ip: str, scene_id: int, brightness_0_255: int) -> None:
         "params": {
             "state": True,
             "sceneId": int(scene_id),
+            "dimming": dimming,
+        },
+    }
+    data = json.dumps(payload).encode("utf-8")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.sendto(data, (ip, WIZ_PORT))
+    finally:
+        sock.close()
+
+
+def send_raw_pilot(
+    ip: str,
+    r: int = 0,
+    g: int = 0,
+    b: int = 0,
+    c: int = 0,
+    w: int = 0,
+    brightness_0_255: int = 140,
+) -> None:
+    brightness = _clamp_channel(brightness_0_255)
+    if brightness <= 0:
+        send_raw_off(ip)
+        return
+
+    dimming = _brightness_to_dimming_percent(brightness)
+    payload = {
+        "id": 1,
+        "method": "setPilot",
+        "params": {
+            "state": True,
+            "r": _clamp_channel(r),
+            "g": _clamp_channel(g),
+            "b": _clamp_channel(b),
+            "c": _clamp_channel(c),
+            "w": _clamp_channel(w),
             "dimming": dimming,
         },
     }
@@ -582,32 +1165,57 @@ async def _apply_mode_to_bulb(bulb, mode: str) -> None:
 
 
 def launch_background(cmd: str, group: str | None) -> None:
+    save_pending_mode(cmd, group)
     running = load_running_effect_name(group)
     if running == cmd:
         if group:
             print(f"EFFECT {cmd} already running ({group}), restarting")
         else:
             print(f"EFFECT {cmd} already running, restarting")
-        stop_running_effect(group)
+        stop_effects_affecting_target(group)
 
     else:
-        stop_running_effect(group)
+        stop_effects_affecting_target(group)
 
     args = [sys.executable, __file__, "--bg", cmd]
     if group:
         args.append(group)
 
-    subprocess.Popen(
-        args,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    try:
+        log = EFFECT_LOG_FILE.open("a", encoding="utf-8")
+    except Exception:
+        log = subprocess.DEVNULL
+
+    try:
+        subprocess.Popen(
+            args,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    finally:
+        if hasattr(log, "close"):
+            log.close()
 
     if group:
         print(f"EFFECT {cmd} started ({group})")
     else:
         print(f"EFFECT {cmd} started")
+
+
+def launch_custom_scene(scene_name: str, group: str | None) -> None:
+    if _scene_uses_background(scene_name):
+        launch_background(scene_name, group)
+        return
+
+    raise ValueError(f"Custom scene is not a background scene: {scene_name}")
+
+
+async def run_or_launch_custom_scene(scene_name: str, group_for_bg: str | None = None) -> None:
+    if _scene_uses_background(scene_name):
+        launch_custom_scene(scene_name, group_for_bg)
+        return
+    await run_custom_scene(scene_name)
 
 # --------------------------------------------------
 # SNAPSHOTS
@@ -790,8 +1398,8 @@ async def show_status() -> None:
     try:
         states = await asyncio.gather(*[b.updateState() for b in bulbs])
 
-        running = load_running_effect_name()
-        last = load_last_mode(active_group())
+        running = load_effect_affecting_target()
+        last = load_last_mode_for_target()
 
         on_bris = []
         for st in states:
@@ -868,7 +1476,7 @@ async def dim_adjust(target: str, delta: int) -> None:
             cur_bri = st.get_brightness() or 120
             new_bri = max(1, min(255, int(cur_bri) + delta))
 
-            last = load_last_mode(active_group())
+            last = load_last_mode_for_target()
             if last and last in PRESETS and "scene_id" in PRESETS[last]:
                 scene_id = PRESETS[last]["scene_id"]
                 send_raw_scene(b.ip, scene_id, new_bri)
@@ -900,6 +1508,346 @@ async def dim_adjust(target: str, delta: int) -> None:
 # --------------------------------------------------
 # FADE
 # --------------------------------------------------
+
+SCENE_CHANNELS = ("r", "g", "b", "c", "w", "brightness")
+
+
+def _scene_step_value(step: dict, key: str, default: int = 0) -> int:
+    aliases = {
+        "c": ("c", "cw", "cold_white"),
+        "w": ("w", "ww", "warm_white"),
+        "brightness": ("brightness", "bri"),
+    }
+    for candidate in aliases.get(key, (key,)):
+        if candidate in step:
+            return _clamp_channel(step.get(candidate))
+    return default
+
+
+def _normalize_scene_step(step: dict) -> dict[str, int]:
+    return {key: _scene_step_value(step, key) for key in SCENE_CHANNELS}
+
+
+def _scene_number(value, default: float = 0.0) -> float:
+    if isinstance(value, (tuple, list)) and len(value) >= 2:
+        lo = float(value[0])
+        hi = float(value[1])
+        return random.uniform(min(lo, hi), max(lo, hi))
+    if value is None:
+        return float(default)
+    return float(value)
+
+
+def _scene_uses_background(scene_name: str) -> bool:
+    scene = CUSTOM_SCENES.get(scene_name, {})
+    return bool(scene.get("loop"))
+
+
+def _raw_state_to_scene_step(raw: dict | None) -> dict[str, int]:
+    result = raw.get("result", {}) if isinstance(raw, dict) else {}
+    on = bool(result.get("state", False))
+    brightness = _dimming_percent_to_brightness(result.get("dimming")) if on else 0
+    return {
+        "r": _clamp_channel(result.get("r")),
+        "g": _clamp_channel(result.get("g")),
+        "b": _clamp_channel(result.get("b")),
+        "c": _clamp_channel(result.get("c")),
+        "w": _clamp_channel(result.get("w")),
+        "brightness": brightness,
+    }
+
+
+def _lerp_rgb_hsv(start: dict[str, int], end: dict[str, int], amount: float) -> tuple[int, int, int]:
+    sr, sg, sb = start["r"] / 255.0, start["g"] / 255.0, start["b"] / 255.0
+    er, eg, eb = end["r"] / 255.0, end["g"] / 255.0, end["b"] / 255.0
+    sh, ss, sv = colorsys.rgb_to_hsv(sr, sg, sb)
+    eh, es, ev = colorsys.rgb_to_hsv(er, eg, eb)
+
+    hue_delta = eh - sh
+    if hue_delta > 0.5:
+        hue_delta -= 1.0
+    elif hue_delta < -0.5:
+        hue_delta += 1.0
+
+    h = (sh + hue_delta * amount) % 1.0
+    s = ss + (es - ss) * amount
+    v = sv + (ev - sv) * amount
+    r, g, b = colorsys.hsv_to_rgb(h, s, v)
+    return (_clamp_channel(r * 255), _clamp_channel(g * 255), _clamp_channel(b * 255))
+
+
+def _lerp_scene_step(start: dict[str, int], end: dict[str, int], amount: float, color_space: str = "rgb") -> dict[str, int]:
+    step = {
+        key: _clamp_channel(start[key] + (end[key] - start[key]) * amount)
+        for key in SCENE_CHANNELS
+    }
+    if color_space == "hsv":
+        step["r"], step["g"], step["b"] = _lerp_rgb_hsv(start, end, amount)
+    return step
+
+
+def _scene_jitter_value(jitter, key: str) -> int:
+    if isinstance(jitter, dict):
+        return int(jitter.get(key, 0))
+    if jitter is None:
+        return 0
+    return int(jitter)
+
+
+def _jitter_scene_step(step: dict[str, int], jitter=None) -> dict[str, int]:
+    if not jitter:
+        return dict(step)
+    result = {}
+    for key, value in step.items():
+        spread = _scene_jitter_value(jitter, key)
+        result[key] = _clamp_channel(value + random.randint(-spread, spread)) if spread > 0 else value
+    return result
+
+
+async def _scene_sleep(seconds: float, loop_scene: bool) -> None:
+    end_time = asyncio.get_event_loop().time() + max(0.0, float(seconds))
+    while True:
+        remaining = end_time - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            return
+        if loop_scene and effect_should_stop():
+            return
+        await asyncio.sleep(min(remaining, 0.5))
+
+
+async def _send_scene_step_to_bulbs(bulbs, step: dict[str, int], jitter=None) -> None:
+    def _prepare_step() -> dict[str, int]:
+        send_step = _jitter_scene_step(step, jitter)
+        send_step["brightness"] = scale_scene_bri(send_step["brightness"])
+        return send_step
+
+    await asyncio.gather(*[
+        asyncio.to_thread(
+            send_raw_pilot,
+            bulb.ip,
+            bulb_step["r"],
+            bulb_step["g"],
+            bulb_step["b"],
+            bulb_step["c"],
+            bulb_step["w"],
+            bulb_step["brightness"],
+        )
+        for bulb in bulbs
+        for bulb_step in [_prepare_step()]
+    ])
+
+
+async def _fade_scene_step(
+    bulbs,
+    start: dict[str, int],
+    end: dict[str, int],
+    seconds: float,
+    interval: float,
+    color_space: str = "rgb",
+    jitter=None,
+) -> None:
+    if seconds <= 0:
+        await _send_scene_step_to_bulbs(bulbs, end, jitter=jitter)
+        return
+
+    steps = max(1, int(float(seconds) / float(interval)))
+    delay = float(seconds) / steps
+    loop = asyncio.get_event_loop()
+    start_time = loop.time()
+
+    for i in range(steps):
+        amount = (i + 1) / steps
+        step = _lerp_scene_step(start, end, amount, color_space=color_space)
+        await _send_scene_step_to_bulbs(bulbs, step, jitter=jitter)
+        next_tick = start_time + (i + 1) * delay
+        await asyncio.sleep(max(0, next_tick - loop.time()))
+
+
+def _scene_result_mode(scene_name: str) -> str:
+    scene = CUSTOM_SCENES.get(scene_name, {})
+    result_mode = scene.get("result_mode")
+    if isinstance(result_mode, str) and result_mode.strip():
+        return _normalize_cmd(result_mode)
+    return scene_name
+
+
+async def _scene_sleep_keep_mode(seconds: float, loop_scene: bool, mode_name: str) -> None:
+    end_time = asyncio.get_event_loop().time() + max(0.0, float(seconds))
+    while True:
+        remaining = end_time - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            return
+        save_pending_mode(mode_name, active_group())
+        if loop_scene and effect_should_stop():
+            return
+        await asyncio.sleep(min(remaining, 0.5))
+
+
+async def _fade_scene_step_keep_mode(
+    bulbs,
+    start: dict[str, int],
+    end: dict[str, int],
+    seconds: float,
+    interval: float,
+    mode_name: str,
+    color_space: str = "rgb",
+    jitter=None,
+) -> None:
+    if seconds <= 0:
+        save_pending_mode(mode_name, active_group())
+        await _send_scene_step_to_bulbs(bulbs, end, jitter=jitter)
+        return
+
+    steps = max(1, int(float(seconds) / float(interval)))
+    delay = float(seconds) / steps
+    loop = asyncio.get_event_loop()
+    start_time = loop.time()
+
+    for i in range(steps):
+        save_pending_mode(mode_name, active_group())
+        amount = (i + 1) / steps
+        step = _lerp_scene_step(start, end, amount, color_space=color_space)
+        await _send_scene_step_to_bulbs(bulbs, step, jitter=jitter)
+        next_tick = start_time + (i + 1) * delay
+        await asyncio.sleep(max(0, next_tick - loop.time()))
+
+
+async def run_custom_scene(name: str) -> None:
+    scene_name = _normalize_cmd(name)
+    if scene_name not in CUSTOM_SCENES:
+        raise ValueError(f"Unknown custom scene: {name}")
+
+    scene = CUSTOM_SCENES[scene_name]
+    raw_steps = scene.get("steps", [])
+    steps = [_normalize_scene_step(step) for step in raw_steps]
+    if not steps:
+        raise ValueError(f"Custom scene has no steps: {name}")
+
+    interval = float(scene.get("interval", 0.25))
+    color_space = str(scene.get("color_space", "rgb")).lower()
+    if color_space not in {"rgb", "hsv"}:
+        color_space = "rgb"
+    jitter = scene.get("jitter")
+    loop_scene = bool(scene.get("loop"))
+    bulbs = await get_bulbs()
+    if not bulbs:
+        return
+
+    set_effect_running(scene_name)
+    if loop_scene:
+        print(f"SCENE        {scene_name} background start")
+
+    try:
+        save_pending_mode(scene_name, active_group())
+        raw_states = await asyncio.gather(*[
+            asyncio.to_thread(get_pilot_raw, bulb.ip, 0.6)
+            for bulb in bulbs
+        ])
+        current_steps = {
+            bulb.ip: _raw_state_to_scene_step(raw)
+            for bulb, raw in zip(bulbs, raw_states)
+        }
+        first_step = steps[0]
+        intro = float(scene.get("intro", 0))
+
+        if intro > 0:
+            await asyncio.gather(*[
+                _fade_scene_step_keep_mode(
+                    [bulb],
+                    current_steps[bulb.ip],
+                    first_step,
+                    intro + (i * float(scene.get("per_bulb_offset", 0))),
+                    interval,
+                    scene_name,
+                    color_space=color_space,
+                    jitter=jitter,
+                )
+                for i, bulb in enumerate(bulbs)
+            ])
+        else:
+            save_pending_mode(scene_name, active_group())
+            await _send_scene_step_to_bulbs(bulbs, first_step, jitter=jitter)
+
+        for bulb in bulbs:
+            current_steps[bulb.ip] = dict(first_step)
+
+        first_hold = _scene_number(raw_steps[0].get("hold", 0))
+        if first_hold > 0:
+            await _scene_sleep_keep_mode(first_hold, loop_scene, scene_name)
+
+        while True:
+            for index in range(len(steps) - 1):
+                save_pending_mode(scene_name, active_group())
+                if loop_scene and effect_should_stop():
+                    return
+
+                raw_step = raw_steps[index]
+                next_raw_step = raw_steps[index + 1]
+                if random.random() > float(next_raw_step.get("chance", 1.0)):
+                    continue
+
+                target_mode = str(next_raw_step.get("target", "all")).lower()
+                if target_mode in {"random", "one"} and len(bulbs) > 1:
+                    target_bulbs = [random.choice(bulbs)]
+                else:
+                    target_bulbs = bulbs
+
+                fade_seconds = _scene_number(raw_step.get("fade", 0))
+                await asyncio.gather(*[
+                    _fade_scene_step_keep_mode(
+                        [bulb],
+                        current_steps[bulb.ip],
+                        steps[index + 1],
+                        fade_seconds,
+                        interval,
+                        scene_name,
+                        color_space=color_space,
+                        jitter=jitter,
+                    )
+                    for bulb in target_bulbs
+                ])
+
+                for bulb in target_bulbs:
+                    current_steps[bulb.ip] = dict(steps[index + 1])
+
+                hold_seconds = _scene_number(next_raw_step.get("hold", 0))
+                if hold_seconds > 0:
+                    await _scene_sleep_keep_mode(hold_seconds, loop_scene, scene_name)
+
+            if not loop_scene:
+                break
+
+            if effect_should_stop():
+                return
+
+            fade_seconds = _scene_number(raw_steps[-1].get("fade", 0))
+            await asyncio.gather(*[
+                _fade_scene_step_keep_mode(
+                    [bulb],
+                    current_steps[bulb.ip],
+                    first_step,
+                    fade_seconds,
+                    interval,
+                    scene_name,
+                    color_space=color_space,
+                    jitter=jitter,
+                )
+                for bulb in bulbs
+            ])
+            for bulb in bulbs:
+                current_steps[bulb.ip] = dict(first_step)
+
+            first_hold = _scene_number(raw_steps[0].get("hold", 0))
+            if first_hold > 0:
+                await _scene_sleep_keep_mode(first_hold, loop_scene, scene_name)
+
+        for bulb in bulbs:
+            print(f"SCENE        {bulb.ip} -> {scene_name}")
+
+    finally:
+        clear_effect_running()
+        await close_all(bulbs)
+
 
 async def fade_to(mode: str, seconds: float) -> None:
     bulbs = await get_bulbs()
@@ -1065,40 +2013,31 @@ async def police_siren(seconds: float = 3600, interval: float = 0.25) -> None:
         if not bulbs:
             return
 
-        if len(bulbs) == 1:
-            b = bulbs[0]
-            while (asyncio.get_event_loop().time() < end_time) and (not effect_should_stop()):
-                bri = load_effect_bri(255)
-                await b.turn_on(PilotBuilder(brightness=bri, rgb=(255, 0, 0)))
-                await asyncio.sleep(float(interval))
-                await b.turn_on(PilotBuilder(brightness=bri, rgb=(0, 120, 255)))
-                await asyncio.sleep(float(interval))
-
-            bri = load_effect_bri(255)
-            await b.turn_on(PilotBuilder(brightness=bri, colortemp=6500))
-            print(f"POLICE_SIREN  {b.ip}")
-            return
-
-        b1, b2 = bulbs[0], bulbs[1]
         while (asyncio.get_event_loop().time() < end_time) and (not effect_should_stop()):
             bri = load_effect_bri(255)
             red = PilotBuilder(brightness=bri, rgb=(255, 0, 0))
             blue = PilotBuilder(brightness=bri, rgb=(0, 120, 255))
 
-            await asyncio.gather(b1.turn_on(red), b2.turn_on(blue))
+            await asyncio.gather(*[
+                bulb.turn_on(red if i % 2 == 0 else blue)
+                for i, bulb in enumerate(bulbs)
+            ])
             await asyncio.sleep(float(interval))
-            await asyncio.gather(b1.turn_on(blue), b2.turn_on(red))
+
+            await asyncio.gather(*[
+                bulb.turn_on(blue if i % 2 == 0 else red)
+                for i, bulb in enumerate(bulbs)
+            ])
             await asyncio.sleep(float(interval))
 
         bri = load_effect_bri(255)
         white = PilotBuilder(brightness=bri, colortemp=6500)
-        await asyncio.gather(b1.turn_on(white), b2.turn_on(white))
-        print(f"POLICE_SIREN  {b1.ip} {b2.ip}")
+        await asyncio.gather(*[bulb.turn_on(white) for bulb in bulbs])
+        print("POLICE_SIREN  " + " ".join(bulb.ip for bulb in bulbs))
 
     finally:
         clear_effect_running()
         await close_all(bulbs)
-
 
 def _fireplace_rand_bri(base_bri: int = 120, bri_jitter: int = 18) -> int:
     raw = int(base_bri) + random.randint(-int(bri_jitter), int(bri_jitter))
@@ -1145,8 +2084,8 @@ async def hearth() -> None:
 
     try:
         await asyncio.gather(
-            _fireplace_organic_single(b1, scene_id, base_bri=130, bri_jitter=18, min_wait=5.5, max_wait=18.0),
-            _fireplace_async_single(b2, scene_id, base_bri=95, bri_jitter=14, min_wait=0.35, max_wait=1.6),
+            _fireplace_organic_single(b1, scene_id, base_bri=118, bri_jitter=12, min_wait=8.0, max_wait=24.0),
+            _fireplace_async_single(b2, scene_id, base_bri=78, bri_jitter=10, min_wait=0.8, max_wait=2.4),
         )
     finally:
         clear_effect_running()
@@ -1158,7 +2097,14 @@ async def embers():
 
 
 async def bonfire():
-    await bonfire_organic(managed=True, effect_name="bonfire")
+    await bonfire_organic(
+        min_wait=0.7,
+        max_wait=2.8,
+        base_bri=175,
+        bri_jitter=42,
+        managed=True,
+        effect_name="bonfire",
+    )
 
 
 async def bonfire_organic(min_wait=2, max_wait=9, base_bri=145, bri_jitter=28, managed=True, effect_name="bonfire_organic"):
@@ -1181,9 +2127,9 @@ async def bonfire_organic(min_wait=2, max_wait=9, base_bri=145, bri_jitter=28, m
             send_raw_scene(bulbs[idx].ip, scene_id, _fireplace_rand_bri(base_bri, bri_jitter))
             print(f"BONFIRE_ORG   reseed {bulbs[idx].ip}")
 
-            if len(bulbs) > 1 and random.random() < 0.55:
+            if len(bulbs) > 1 and random.random() < 0.72:
                 other = random.choice([i for i in range(len(bulbs)) if i != idx])
-                delay = random.uniform(0.05, 0.5)
+                delay = random.uniform(0.03, 0.3)
                 await asyncio.sleep(delay)
                 send_raw_scene(bulbs[other].ip, scene_id, _fireplace_rand_bri(base_bri, bri_jitter))
                 print(f"BONFIRE_ORG   reseed {bulbs[other].ip} after {delay:.2f}s")
@@ -1372,6 +2318,210 @@ async def _ramp(bulbs, start_bri: int, end_bri: int, seconds: float, ct: int = 2
         await _apply_brightness_all(bulbs, bri, ct=ct)
         next_tick = t0 + (i + 1) * delay
         await asyncio.sleep(max(0, next_tick - loop.time()))
+
+
+def _cosine_ease(amount: float) -> float:
+    amount = max(0.0, min(1.0, float(amount)))
+    return 0.5 - 0.5 * math.cos(math.pi * amount)
+
+
+@dataclass
+class BreathCycle:
+    inhale: float
+    top_pause: float
+    exhale: float
+    bottom_pause: float
+    low_bri: int
+    high_bri: int
+    low_rgb: tuple[int, int, int]
+    high_rgb: tuple[int, int, int]
+    peak_rgb: tuple[int, int, int]
+    start_time: float
+    shimmer: bool
+    shimmer_amount: float
+    shimmer_phase: float
+
+    @property
+    def duration(self) -> float:
+        return self.inhale + self.top_pause + self.exhale + self.bottom_pause
+
+
+def _rand_pct_bri(bounds: tuple[float, float]) -> int:
+    pct = random.uniform(float(bounds[0]), float(bounds[1]))
+    return max(1, min(255, int(round(255 * (pct / 100.0)))))
+
+
+def _rand_rgb_channel(bounds: tuple[int, int]) -> int:
+    return random.randint(int(bounds[0]), int(bounds[1]))
+
+
+def _new_breath_cycle(
+    start_time: float,
+    inhale_range: tuple[float, float],
+    top_pause_range: tuple[float, float],
+    exhale_range: tuple[float, float],
+    bottom_pause_range: tuple[float, float],
+    min_pct_range: tuple[float, float],
+    max_pct_range: tuple[float, float],
+    shimmer_chance: float,
+) -> BreathCycle:
+    return BreathCycle(
+        inhale=random.uniform(*inhale_range),
+        top_pause=random.uniform(*top_pause_range),
+        exhale=random.uniform(*exhale_range),
+        bottom_pause=random.uniform(*bottom_pause_range),
+        low_bri=_rand_pct_bri(min_pct_range),
+        high_bri=_rand_pct_bri(max_pct_range),
+        low_rgb=(
+            _rand_rgb_channel((35, 55)),
+            _rand_rgb_channel((12, 20)),
+            _rand_rgb_channel((4, 8)),
+        ),
+        high_rgb=(
+            _rand_rgb_channel((212, 228)),
+            _rand_rgb_channel((88, 104)),
+            _rand_rgb_channel((30, 42)),
+        ),
+        peak_rgb=(
+            _rand_rgb_channel((245, 255)),
+            _rand_rgb_channel((132, 150)),
+            _rand_rgb_channel((60, 76)),
+        ),
+        start_time=start_time,
+        shimmer=random.random() < float(shimmer_chance),
+        shimmer_amount=random.uniform(0.01, 0.03),
+        shimmer_phase=random.uniform(0.0, math.tau),
+    )
+
+
+def _breath_amount(phase: float, cycle: BreathCycle) -> float:
+    if phase < 0:
+        return 0.0
+    if phase < cycle.inhale:
+        return _cosine_ease(phase / cycle.inhale)
+    phase -= cycle.inhale
+    if phase < cycle.top_pause:
+        return 1.0
+    phase -= cycle.top_pause
+    if phase < cycle.exhale:
+        return 1.0 - _cosine_ease(phase / cycle.exhale)
+    return 0.0
+
+
+def _stable_bulb_offset(ip: str) -> float:
+    # Stable per bulb, intentionally tiny, so the room breathes without robotic sync.
+    total = sum((idx + 1) * ord(ch) for idx, ch in enumerate(ip))
+    return 0.1 + ((total % 401) / 1000.0)
+
+
+def _breath_room_delay(ip: str, kitchen_delay: float) -> float:
+    room = ROOM_BY_IP.get(ip, "").lower()
+    if room == "kitchen":
+        return float(kitchen_delay)
+    return 0.0
+
+
+def _lerp_rgb(low: tuple[int, int, int], high: tuple[int, int, int], amount: float) -> tuple[int, int, int]:
+    return (
+        _lerp_int(low[0], high[0], amount),
+        _lerp_int(low[1], high[1], amount),
+        _lerp_int(low[2], high[2], amount),
+    )
+
+
+def _breath_shimmer(cycle: BreathCycle, phase: float) -> float:
+    exhale_start = cycle.inhale + cycle.top_pause
+    exhale_phase = phase - exhale_start
+    if not cycle.shimmer or exhale_phase < cycle.exhale * 0.75:
+        return 0.0
+
+    # Rare, slow ember motion near the bottom of some exhales; never a flicker.
+    wobble = math.sin((exhale_phase * 1.6) + cycle.shimmer_phase)
+    fade_in = _cosine_ease((exhale_phase - cycle.exhale * 0.75) / (cycle.exhale * 0.25))
+    return cycle.shimmer_amount * fade_in * wobble
+
+
+async def minotaur_breath(
+    effect_name: str = "breathe",
+    inhale_range: tuple[float, float] = (3.2, 4.2),
+    top_pause_range: tuple[float, float] = (0.4, 1.0),
+    exhale_range: tuple[float, float] = (5.5, 7.5),
+    bottom_pause_range: tuple[float, float] = (1.2, 2.8),
+    min_pct_range: tuple[float, float] = (2.0, 4.0),
+    max_pct_range: tuple[float, float] = (32.0, 45.0),
+    shimmer_chance: float = 0.28,
+    updates_per_second: float = 4.0,
+) -> None:
+    bulbs = await get_bulbs()
+    if not bulbs:
+        return
+
+    label = effect_name.upper()[:12].ljust(12)
+    set_effect_running(effect_name)
+    print(f"{label} background start")
+
+    tick = 1.0 / max(0.5, float(updates_per_second))
+    loop = asyncio.get_event_loop()
+    kitchen_delay = random.uniform(0.6, 1.0)
+    cycle = _new_breath_cycle(
+        loop.time(),
+        inhale_range,
+        top_pause_range,
+        exhale_range,
+        bottom_pause_range,
+        min_pct_range,
+        max_pct_range,
+        shimmer_chance,
+    )
+
+    offsets = {
+        bulb.ip: _breath_room_delay(bulb.ip, kitchen_delay) + _stable_bulb_offset(bulb.ip)
+        for bulb in bulbs
+    }
+
+    try:
+        while not effect_should_stop():
+            now = loop.time()
+            if now - cycle.start_time >= cycle.duration:
+                cycle = _new_breath_cycle(
+                    cycle.start_time + cycle.duration,
+                    inhale_range,
+                    top_pause_range,
+                    exhale_range,
+                    bottom_pause_range,
+                    min_pct_range,
+                    max_pct_range,
+                    shimmer_chance,
+                )
+
+            for bulb in bulbs:
+                phase = now - cycle.start_time - offsets[bulb.ip]
+                amount = _breath_amount(phase, cycle)
+                shimmer = _breath_shimmer(cycle, phase)
+                bri = _lerp_int(cycle.low_bri, cycle.high_bri, amount)
+                bri = max(1, min(255, int(round(bri * (1.0 + shimmer)))))
+                peak = _cosine_ease((amount - 0.82) / 0.18) if amount > 0.82 else 0.0
+                rgb = _lerp_rgb(cycle.low_rgb, cycle.high_rgb, amount)
+                rgb = _lerp_rgb(rgb, cycle.peak_rgb, peak * 0.35)
+                send_raw_rgb(bulb.ip, rgb[0], rgb[1], rgb[2], scale_bri(bri))
+
+            await asyncio.sleep(tick)
+    finally:
+        clear_effect_running()
+        await close_all(bulbs)
+
+
+async def sleep_breathe() -> None:
+    await minotaur_breath(
+        effect_name="sleep_breathe",
+        inhale_range=(5.0, 7.0),
+        top_pause_range=(0.6, 1.2),
+        exhale_range=(8.0, 12.0),
+        bottom_pause_range=(2.0, 4.0),
+        min_pct_range=(1.0, 3.0),
+        max_pct_range=(8.0, 18.0),
+        shimmer_chance=0.18,
+    )
 
 
 async def breathe_soft(low: int = 60, high: int = 120, cycle: float = 16) -> None:
@@ -1660,28 +2810,29 @@ def _clamp(n: int, lo: int, hi: int) -> int:
 
 def _deep_ocean_rand_rgb() -> tuple[int, int, int]:
     """
-    Abyss palette — deep blue/purple flame, no green.
+    Abyss palette - a dark candle flame: mostly violet/indigo with rare blue-white wick flares.
     """
-    roll = random.random()
+    return _weighted_palette_choice([
+        (36, (24, 58), (0, 5), (82, 145)),       # low violet body
+        (26, (8, 30), (0, 6), (105, 175)),       # midnight indigo
+        (18, (42, 82), (0, 7), (115, 190)),      # purple breathing edge
+        (12, (4, 18), (8, 24), (95, 155)),       # cold blue shadow
+        (6, (70, 118), (0, 8), (175, 245)),      # quick violet lick
+        (2, (115, 165), (8, 24), (215, 255)),    # rare dark-candle wick flare
+    ])
 
-    # Bright violet flare
-    if roll < 0.08:
-        return (random.randint(90, 140), random.randint(0, 8), random.randint(200, 255))
 
-    # Deep violet — dominant
-    if roll < 0.50:
-        return (random.randint(40, 85), random.randint(0, 6), random.randint(120, 185))
+def _abyss_neighbor_rgb(rgb: tuple[int, int, int], spread: int = 20) -> tuple[int, int, int]:
+    r, g, b = rgb
+    return (
+        _clamp(r + random.randint(-spread, spread), 0, 255),
+        _clamp(g + random.randint(-4, 8), 0, 32),
+        _clamp(b + random.randint(-spread, spread), 70, 255),
+    )
 
-    # Midnight indigo — bluer
-    if roll < 0.75:
-        return (random.randint(15, 45), random.randint(0, 5), random.randint(160, 230))
 
-    # Dark plum — warmer
-    if roll < 0.90:
-        return (random.randint(60, 100), random.randint(0, 8), random.randint(80, 135))
-
-    # Deep cobalt — cold accent
-    return (random.randint(5, 20), random.randint(0, 10), random.randint(140, 200))
+def _lerp_int(start: int, end: int, amount: float) -> int:
+    return int(round(start + (end - start) * amount))
 
 
 def _weighted_palette_choice(palette: list[tuple[int, tuple[int, int], tuple[int, int], tuple[int, int]]]) -> tuple[int, int, int]:
@@ -1702,6 +2853,117 @@ def _weighted_palette_choice(palette: list[tuple[int, tuple[int, int], tuple[int
         random.randint(green[0], green[1]),
         random.randint(blue[0], blue[1]),
     )
+
+
+LAVA_LAMP_PALETTE = [
+    (28, (50, 90), (0, 8), (78, 135)),       # dark violet wax
+    (24, (82, 135), (0, 10), (105, 175)),    # plum glow
+    (18, (115, 170), (8, 24), (44, 88)),     # wine red body
+    (14, (25, 58), (6, 18), (112, 185)),     # indigo shadow
+    (10, (135, 195), (32, 62), (35, 72)),    # dim ember edge
+    (6, (145, 210), (0, 16), (145, 215)),    # slow magenta bloom
+]
+
+
+def _lava_lamp_rgb_variant(rgb: tuple[int, int, int], spread: int = 22) -> tuple[int, int, int]:
+    r, g, b = rgb
+    return (
+        _clamp(r + random.randint(-spread, spread), 8, 220),
+        _clamp(g + random.randint(-6, 12), 0, 70),
+        _clamp(b + random.randint(-spread, spread), 28, 225),
+    )
+
+
+async def lava_lamp(base_bri: int = 46, bri_jitter: int = 16) -> None:
+    bulbs = await get_bulbs()
+    if not bulbs:
+        return
+
+    set_effect_running("lava_lamp")
+    print("LAVA_LAMP     background start")
+
+    mood = {"rgb": _weighted_palette_choice(LAVA_LAMP_PALETTE)}
+    room_moods: dict[str, tuple[int, int, int]] = {}
+
+    def _room_key(bulb) -> str:
+        return ROOM_BY_IP.get(bulb.ip, "ALL").lower()
+
+    for bulb in bulbs:
+        room = _room_key(bulb)
+        room_moods.setdefault(room, _lava_lamp_rgb_variant(mood["rgb"], spread=20))
+
+    def _rand_bri(warm_blob: bool = False) -> int:
+        bump = random.randint(8, 24) if warm_blob else 0
+        raw = int(base_bri) + bump + random.randint(-int(bri_jitter), int(bri_jitter))
+        return max(10, min(95, int(scale_bri(raw))))
+
+    def _send(bulb, rgb: tuple[int, int, int], bri: int) -> None:
+        send_raw_rgb(bulb.ip, rgb[0], rgb[1], rgb[2], bri)
+
+    async def _mood_drift() -> None:
+        while not effect_should_stop():
+            if random.random() < 0.62:
+                mood["rgb"] = _lava_lamp_rgb_variant(mood["rgb"], spread=20)
+            else:
+                mood["rgb"] = _weighted_palette_choice(LAVA_LAMP_PALETTE)
+            await asyncio.sleep(random.uniform(3.5, 8.0))
+
+    async def _room_drift(room: str, offset: float) -> None:
+        await asyncio.sleep(offset)
+        while not effect_should_stop():
+            whole_rgb = mood["rgb"]
+            current_rgb = room_moods[room]
+            amount = random.uniform(0.42, 0.68)
+            followed_rgb = (
+                _lerp_int(current_rgb[0], whole_rgb[0], amount),
+                _lerp_int(current_rgb[1], whole_rgb[1], amount),
+                _lerp_int(current_rgb[2], whole_rgb[2], amount),
+            )
+            room_moods[room] = _lava_lamp_rgb_variant(followed_rgb, spread=18)
+            await asyncio.sleep(random.uniform(1.8, 4.5))
+
+    async def _bulb_drift(bulb, index: int) -> None:
+        room = _room_key(bulb)
+        current_rgb = _lava_lamp_rgb_variant(room_moods[room], spread=18 + (index % 3) * 4)
+        current_bri = _rand_bri()
+        _send(bulb, current_rgb, current_bri)
+        await asyncio.sleep(random.uniform(0.1, 0.8))
+
+        while not effect_should_stop():
+            warm_blob = random.random() < 0.28
+            target_rgb = _lava_lamp_rgb_variant(room_moods[room], spread=26 + (index % 4) * 5)
+            target_bri = _rand_bri(warm_blob=warm_blob)
+            steps = random.randint(5, 10)
+            step_wait = random.uniform(0.22, 0.48)
+
+            for step in range(1, steps + 1):
+                if effect_should_stop():
+                    return
+                amount = step / steps
+                rgb = (
+                    _lerp_int(current_rgb[0], target_rgb[0], amount),
+                    _lerp_int(current_rgb[1], target_rgb[1], amount),
+                    _lerp_int(current_rgb[2], target_rgb[2], amount),
+                )
+                bri = _lerp_int(current_bri, target_bri, amount)
+                _send(bulb, rgb, bri)
+                await asyncio.sleep(step_wait)
+
+            current_rgb = target_rgb
+            current_bri = target_bri
+            await asyncio.sleep(random.uniform(0.35, 1.6))
+
+    try:
+        tasks = [asyncio.create_task(_mood_drift())]
+        tasks.extend(
+            asyncio.create_task(_room_drift(room, offset=i * 0.45))
+            for i, room in enumerate(sorted(room_moods))
+        )
+        tasks.extend(asyncio.create_task(_bulb_drift(bulb, i)) for i, bulb in enumerate(bulbs))
+        await asyncio.gather(*tasks)
+    finally:
+        clear_effect_running()
+        await close_all(bulbs)
 
 
 DARK_ORGANIC_EFFECTS = {
@@ -1805,8 +3067,8 @@ async def campfire_low() -> None:
     await fireplace_organic(min_wait=8, max_wait=26, base_bri=55, bri_jitter=10, managed=True, effect_name="campfire_low")
 
 
-async def deep_ocean_organic(min_wait=6, max_wait=22, base_bri=55, bri_jitter=20, managed=True):
-    """Abyss effect — same architecture as embers, purple/blue flame colors."""
+async def deep_ocean_organic(min_wait=2.2, max_wait=7.5, base_bri=38, bri_jitter=16, managed=True):
+    """Abyss effect - an organic dark candle in purple/blue flame colors."""
     bulbs = await get_bulbs()
     if len(bulbs) < 2:
         raise RuntimeError("abyss requires 2 bulbs")
@@ -1815,29 +3077,59 @@ async def deep_ocean_organic(min_wait=6, max_wait=22, base_bri=55, bri_jitter=20
         set_effect_running("abyss")
     print("ABYSS         background start")
 
-    def _rand_bri():
+    def _rand_bri(flare: bool = False):
+        if flare:
+            raw = int(base_bri) + random.randint(18, 38)
+            return max(18, min(255, int(scale_bri(raw))))
         raw = int(base_bri) + random.randint(-int(bri_jitter), int(bri_jitter))
-        return max(10, min(255, int(scale_bri(raw))))
+        return max(8, min(255, int(scale_bri(raw))))
 
     def _send(b, rgb, bri):
         send_raw_rgb(b.ip, rgb[0], rgb[1], rgb[2], bri)
 
     try:
-        # Initialize all bulbs
+        states = {}
+        mood_rgb = _deep_ocean_rand_rgb()
         for b in bulbs:
-            _send(b, _deep_ocean_rand_rgb(), _rand_bri())
+            rgb = _abyss_neighbor_rgb(mood_rgb)
+            bri = _rand_bri()
+            states[b.ip] = (rgb, bri)
+            _send(b, rgb, bri)
         await asyncio.sleep(0.4)
 
         while not effect_should_stop():
-            idx = random.choice(range(len(bulbs)))
-            _send(bulbs[idx], _deep_ocean_rand_rgb(), _rand_bri())
+            if random.random() < 0.45:
+                mood_rgb = _abyss_neighbor_rgb(mood_rgb, spread=14)
+            else:
+                mood_rgb = _deep_ocean_rand_rgb()
 
-            if random.random() < 0.55:
-                other = (idx + 1) % len(bulbs)
-                delay = random.uniform(0.05, 0.5)
-                await asyncio.sleep(delay)
-                _send(bulbs[other], _deep_ocean_rand_rgb(), _rand_bri())
+            targets = {}
+            for b in bulbs:
+                flare = random.random() < 0.07
+                targets[b.ip] = (_abyss_neighbor_rgb(mood_rgb), _rand_bri(flare=flare))
 
+            steps = random.randint(4, 7)
+            step_wait = random.uniform(0.22, 0.48)
+            for step in range(1, steps + 1):
+                if effect_should_stop():
+                    break
+                amount = step / steps
+                send_order = list(bulbs)
+                random.shuffle(send_order)
+                for b in send_order:
+                    start_rgb, start_bri = states[b.ip]
+                    target_rgb, target_bri = targets[b.ip]
+                    rgb = (
+                        _lerp_int(start_rgb[0], target_rgb[0], amount),
+                        _lerp_int(start_rgb[1], target_rgb[1], amount),
+                        _lerp_int(start_rgb[2], target_rgb[2], amount),
+                    )
+                    bri = _lerp_int(start_bri, target_bri, amount)
+                    _send(b, rgb, bri)
+                    await asyncio.sleep(random.uniform(0.015, 0.06))
+                await asyncio.sleep(step_wait)
+
+            states.update(targets)
             await asyncio.sleep(random.uniform(float(min_wait), float(max_wait)))
 
     finally:
@@ -1846,12 +3138,136 @@ async def deep_ocean_organic(min_wait=6, max_wait=22, base_bri=55, bri_jitter=20
         await close_all(bulbs)
 
 
+
+NEON_RAIN_PALETTE = [
+    (255, 0, 170),
+    (120, 0, 255),
+    (0, 210, 255),
+    (0, 90, 255),
+]
+
+DEEP_SPACE_PALETTE = [
+    (6, 4, 42),
+    (18, 8, 80),
+    (40, 8, 115),
+    (3, 20, 78),
+    (120, 160, 255),
+]
+
+MOONLIGHT_PALETTE = [
+    (120, 160, 220),
+    (160, 205, 255),
+    (90, 125, 190),
+    (190, 220, 255),
+]
+
+SYNTHWAVE_PALETTE = [
+    (255, 0, 150),
+    (95, 0, 255),
+    (0, 180, 255),
+    (255, 80, 0),
+]
+
+BIOHAZARD_PALETTE = [
+    (90, 255, 30),
+    (160, 255, 0),
+    (255, 180, 0),
+    (25, 120, 0),
+]
+
+UNDERWATER_RUINS_PALETTE = [
+    (0, 45, 80),
+    (0, 90, 120),
+    (0, 125, 150),
+    (15, 70, 110),
+    (70, 170, 190),
+]
+
+async def palette_drift(effect_name: str, palette: list[tuple[int, int, int]], base_bri: int, bri_jitter: int, min_wait: float, max_wait: float) -> None:
+    bulbs = await get_bulbs()
+    if not bulbs:
+        return
+
+    set_effect_running(effect_name)
+
+    def _rand_bri() -> int:
+        raw = int(base_bri) + random.randint(-int(bri_jitter), int(bri_jitter))
+        return max(8, min(255, int(scale_bri(raw))))
+
+    try:
+        for i, bulb in enumerate(bulbs):
+            rgb = palette[i % len(palette)]
+            send_raw_rgb(bulb.ip, rgb[0], rgb[1], rgb[2], _rand_bri())
+        await asyncio.sleep(0.4)
+
+        while not effect_should_stop():
+            bulb = random.choice(bulbs)
+            rgb = random.choice(palette)
+            rgb = _soft_rgb_variant(rgb, spread=14)
+            send_raw_rgb(bulb.ip, rgb[0], rgb[1], rgb[2], _rand_bri())
+
+            if len(bulbs) > 1 and random.random() < 0.45:
+                await asyncio.sleep(random.uniform(0.08, 0.5))
+                other = random.choice([b for b in bulbs if b.ip != bulb.ip])
+                rgb = random.choice(palette)
+                rgb = _soft_rgb_variant(rgb, spread=14)
+                send_raw_rgb(other.ip, rgb[0], rgb[1], rgb[2], _rand_bri())
+
+            await asyncio.sleep(random.uniform(float(min_wait), float(max_wait)))
+
+    finally:
+        clear_effect_running()
+        await close_all(bulbs)
+
+async def neon_rain() -> None:
+    await palette_drift("neon_rain", NEON_RAIN_PALETTE, 95, 28, 0.55, 1.7)
+
+async def deep_space() -> None:
+    await palette_drift("deep_space", DEEP_SPACE_PALETTE, 34, 18, 2.5, 7.0)
+
+async def moonlight() -> None:
+    await palette_drift("moonlight", MOONLIGHT_PALETTE, 58, 14, 3.0, 8.5)
+
+async def synthwave() -> None:
+    await palette_drift("synthwave", SYNTHWAVE_PALETTE, 120, 36, 0.8, 2.2)
+
+async def biohazard() -> None:
+    await palette_drift("biohazard", BIOHAZARD_PALETTE, 90, 34, 0.45, 1.4)
+
+async def underwater_ruins() -> None:
+    await palette_drift("underwater_ruins", UNDERWATER_RUINS_PALETTE, 48, 18, 1.8, 5.8)
+
+async def arc_reactor() -> None:
+    bulbs = await get_bulbs()
+    if not bulbs:
+        return
+
+    set_effect_running("arc_reactor")
+    rgb = (80, 235, 255)
+
+    try:
+        while not effect_should_stop():
+            await asyncio.gather(*[b.turn_on(PilotBuilder(brightness=scale_bri(55), rgb=rgb)) for b in bulbs])
+            await asyncio.sleep(0.8)
+            await asyncio.gather(*[b.turn_on(PilotBuilder(brightness=scale_bri(150), rgb=rgb)) for b in bulbs])
+            await asyncio.sleep(0.18)
+            await asyncio.gather(*[b.turn_on(PilotBuilder(brightness=scale_bri(85), rgb=rgb)) for b in bulbs])
+            await asyncio.sleep(1.4)
+    finally:
+        clear_effect_running()
+        await close_all(bulbs)
+
 # --------------------------------------------------
 # BACKGROUND DISPATCH
 # --------------------------------------------------
 
 async def run_background(cmd: str, args: list[str]) -> None:
     _install_signal_handlers()
+
+    if cmd in CUSTOM_SCENES and _scene_uses_background(cmd):
+        await run_custom_scene(cmd)
+        save_last_mode(cmd, active_group())
+        return
 
     if cmd == "fireplace_ambient":
         await fireplace_ambient()
@@ -1867,6 +3283,16 @@ async def run_background(cmd: str, args: list[str]) -> None:
 
     if cmd == "candle_pair":
         await candle_pair()
+        return
+
+    if cmd == "breathe":
+        await minotaur_breath(effect_name="breathe")
+        save_last_mode(cmd, active_group())
+        return
+
+    if cmd == "sleep_breathe":
+        await sleep_breathe()
+        save_last_mode("sleep_breathe", active_group())
         return
 
     if cmd == "breathe_soft":
@@ -1895,6 +3321,11 @@ async def run_background(cmd: str, args: list[str]) -> None:
         save_last_mode("sleep_flow", active_group())
         return
 
+    if cmd == "lava_lamp":
+        await lava_lamp()
+        save_last_mode("lava_lamp", active_group())
+        return
+
     if cmd in DARK_ORGANIC_EFFECTS:
         await dark_organic(cmd)
         save_last_mode(cmd, active_group())
@@ -1921,7 +3352,7 @@ async def run_background(cmd: str, args: list[str]) -> None:
         return
 
     if cmd == "hearth":
-        await fireplace_ambient(managed=True, effect_name="hearth")
+        await hearth()
         save_last_mode("hearth", active_group())
         return
 
@@ -1935,9 +3366,44 @@ async def run_background(cmd: str, args: list[str]) -> None:
         save_last_mode("abyss", active_group())
         return
 
+    if cmd == "neon_rain":
+        await neon_rain()
+        save_last_mode("neon_rain", active_group())
+        return
+
+    if cmd == "deep_space":
+        await deep_space()
+        save_last_mode("deep_space", active_group())
+        return
+
+    if cmd == "moonlight":
+        await moonlight()
+        save_last_mode("moonlight", active_group())
+        return
+
+    if cmd == "synthwave":
+        await synthwave()
+        save_last_mode("synthwave", active_group())
+        return
+
+    if cmd == "biohazard":
+        await biohazard()
+        save_last_mode("biohazard", active_group())
+        return
+
+    if cmd == "underwater_ruins":
+        await underwater_ruins()
+        save_last_mode("underwater_ruins", active_group())
+        return
+
+    if cmd == "arc_reactor":
+        await arc_reactor()
+        save_last_mode("arc_reactor", active_group())
+        return
+
     if cmd == "alert_police":
         secs = float(args[0]) if len(args) > 0 else 15.0
-        stop_running_effect(active_group())
+        stop_effects_affecting_target()
         await alert_police(seconds=secs)
         return
 
@@ -1949,16 +3415,325 @@ async def run_background(cmd: str, args: list[str]) -> None:
                 ALERT_PULSE_TOGGLE.unlink()
             except FileNotFoundError:
                 pass
-            stop_running_effect(active_group())
+            stop_effects_affecting_target()
             print("ALERT_PULSE   stopped")
             return
 
         ALERT_PULSE_TOGGLE.write_text("1")
-        stop_running_effect(active_group())
+        stop_effects_affecting_target()
         await alert_pulse(seconds=secs)
         return
 
     raise RuntimeError(f"Unknown background effect: {cmd}")
+
+
+# --------------------------------------------------
+# COOK MODE
+# --------------------------------------------------
+
+def _cook_log(message: str, **fields) -> None:
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    parts = [f"{stamp}", f"pid={os.getpid()}", message]
+    for key, value in fields.items():
+        parts.append(f"{key}={value!r}")
+    try:
+        with COOK_LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(" ".join(parts) + "\n")
+    except Exception:
+        pass
+
+
+def _effect_log(message: str, **fields) -> None:
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    parts = [stamp, f"pid={os.getpid()}", message]
+    for key, value in fields.items():
+        parts.append(f"{key}={value!r}")
+    try:
+        with EFFECT_LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(" ".join(parts) + "\n")
+    except Exception:
+        pass
+
+
+def _audit_log(event: str, **fields) -> None:
+    def _proc_cmdline(pid: int) -> str | None:
+        try:
+            return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+        except Exception:
+            return None
+
+    def _proc_ppid(pid: int) -> int | None:
+        try:
+            for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+                if line.startswith("PPid:"):
+                    return int(line.split()[1])
+        except Exception:
+            return None
+        return None
+
+    record = {
+        "ts": time.time(),
+        "event": event,
+        "pid": os.getpid(),
+        "ppid": os.getppid(),
+        "argv": sys.argv[:],
+    }
+
+    parent_cmd = _proc_cmdline(os.getppid())
+    if parent_cmd:
+        record["ppid_cmdline"] = parent_cmd
+
+    process_tree = []
+    seen_pids = set()
+    pid = os.getppid()
+    for _ in range(5):
+        if not pid or pid in seen_pids or pid <= 1:
+            break
+        seen_pids.add(pid)
+        cmdline = _proc_cmdline(pid)
+        if cmdline:
+            process_tree.append({"pid": pid, "cmdline": cmdline})
+        pid = _proc_ppid(pid)
+
+    if process_tree:
+        record["process_tree"] = process_tree
+
+    env_snapshot = {
+        key: os.getenv(key)
+        for key in (
+            "LIGHTS_SOURCE",
+            "LIGHTS_API_ROUTE",
+            "LIGHTS_DAEMON_ACTION",
+            "LIGHTS_DASHBOARD_ACTION",
+            "LIGHTS_MQTT_TOPIC",
+            "SSH_CONNECTION",
+            "TERM",
+            "USER",
+        )
+        if os.getenv(key) is not None
+    }
+    if env_snapshot:
+        record["env"] = env_snapshot
+
+    for key, value in fields.items():
+        record[key] = value
+
+    try:
+        with AUDIT_LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, sort_keys=True) + "\n")
+    except Exception:
+        pass
+
+
+def _load_cook_press_state() -> dict:
+    try:
+        raw = COOK_DEBOUNCE_FILE.read_text().strip()
+    except Exception:
+        return {}
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        try:
+            return {"time": float(raw), "branch": "legacy"}
+        except Exception:
+            return {}
+
+
+def _write_json_atomic(path: Path, data: dict) -> None:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(path)
+
+
+def _save_cook_press_state(branch: str) -> None:
+    data = {"time": time.time(), "branch": branch, "pid": os.getpid()}
+    try:
+        _write_json_atomic(COOK_DEBOUNCE_FILE, data)
+    except Exception:
+        pass
+
+
+def _cook_restore_mode(saved_kitchen_mode: str | None, saved_all_mode: str | None) -> str:
+    temporary_cook_modes = {"soft", COOK_MODE}
+    if saved_kitchen_mode and saved_kitchen_mode not in temporary_cook_modes:
+        return saved_kitchen_mode
+    if saved_kitchen_mode in temporary_cook_modes and saved_all_mode:
+        _cook_log("restore skipped cook mode", mode=saved_kitchen_mode, fallback=saved_all_mode)
+        return saved_all_mode
+    return saved_kitchen_mode or saved_all_mode or "golden_white"
+
+
+async def cook_toggle() -> None:
+    try:
+        COOK_LOCK_FILE.touch(exist_ok=True)
+        lock_fh = COOK_LOCK_FILE.open("r+")
+    except Exception as e:
+        _cook_log("lock open failed", error=type(e).__name__)
+        print("COOK         busy")
+        return
+
+    with lock_fh:
+        deadline = time.monotonic() + 1.5
+        while True:
+            try:
+                fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    _cook_log("lock timeout")
+                    print("COOK         busy")
+                    return
+                time.sleep(0.05)
+
+        try:
+            await _cook_toggle_locked()
+        finally:
+            try:
+                fcntl.flock(lock_fh, fcntl.LOCK_UN)
+            except Exception:
+                pass
+
+
+async def _cook_toggle_locked() -> None:
+    """
+    Toggle kitchen cooking mode.
+
+    First run:
+      - saves current mode/effect info
+      - if an all-room effect is running, moves it to entryway only
+      - sets kitchen to the cook preset
+
+    Second run:
+      - restores the prior kitchen/all mode or effect
+    """
+    old_group = active_group()
+    _cook_log("start", active_group=old_group, override_exists=COOK_OVERRIDE_FILE.exists())
+
+    def _recent_press(branch: str, max_age: float = 0.6) -> float | None:
+        press_state = _load_cook_press_state()
+        last_branch = press_state.get("branch")
+        last_time = float(press_state.get("time") or 0.0)
+        age = time.time() - last_time if last_time else None
+        if last_branch == branch and age is not None and age < max_age:
+            return age
+        return None
+
+    if COOK_OVERRIDE_FILE.exists():
+        age = _recent_press("activate")
+        if age is not None:
+            _cook_log("restore ignored duplicate", age=round(age, 3))
+            print("COOK         ignored duplicate restore")
+            return
+
+        try:
+            data = json.loads(COOK_OVERRIDE_FILE.read_text())
+        except Exception as e:
+            _cook_log("restore invalid override", error=type(e).__name__)
+            data = {}
+
+        _safe_unlink(COOK_OVERRIDE_FILE)
+        _save_cook_press_state("restore")
+
+        saved_effect = data.get("effect")
+        saved_effect_group = data.get("effect_group")
+        saved_kitchen_mode = data.get("last_kitchen")
+        saved_all_mode = data.get("last_all")
+        _cook_log(
+            "restore branch",
+            saved_effect=saved_effect,
+            saved_effect_group=saved_effect_group,
+            saved_kitchen_mode=saved_kitchen_mode,
+            saved_all_mode=saved_all_mode,
+        )
+
+        stop_running_effect("kitchen")
+
+        if saved_effect:
+            save_pending_mode(saved_effect, "kitchen")
+            launch_background(saved_effect, "kitchen")
+            save_last_mode(saved_effect, "kitchen")
+            _cook_log("restored effect", effect=saved_effect, original_group=saved_effect_group, group="kitchen")
+            print("COOK         restored")
+            _set_active_group(old_group)
+            return
+
+        restore_mode = _cook_restore_mode(saved_kitchen_mode, saved_all_mode)
+        if restore_mode in BACKGROUND_EFFECTS:
+            save_pending_mode(restore_mode, "kitchen")
+            launch_background(restore_mode, "kitchen")
+            save_last_mode(restore_mode, "kitchen")
+            _cook_log("restored saved background mode", mode=restore_mode, group="kitchen")
+        elif restore_mode in CUSTOM_SCENES:
+            _set_active_group("kitchen")
+            try:
+                save_pending_mode(restore_mode, "kitchen")
+                await run_or_launch_custom_scene(restore_mode, "kitchen" if _scene_uses_background(restore_mode) else None)
+                save_last_mode(restore_mode, "kitchen")
+            finally:
+                _set_active_group(old_group)
+            _cook_log("restored saved custom scene", mode=restore_mode, group="kitchen")
+        else:
+            _set_active_group("kitchen")
+            try:
+                save_pending_mode(restore_mode, "kitchen")
+                await turn_on(restore_mode)
+                save_last_mode(restore_mode, "kitchen")
+            finally:
+                _set_active_group(old_group)
+            _cook_log("restored saved preset", mode=restore_mode, group="kitchen")
+
+        print("COOK         restored")
+        _set_active_group(old_group)
+        return
+
+    age = _recent_press("restore")
+    if age is not None:
+        _cook_log("activate ignored duplicate", age=round(age, 3))
+        print("COOK         ignored duplicate activate")
+        return
+
+    saved = {
+        "effect": load_effect_affecting_target("kitchen"),
+        "effect_group": effect_group_affecting_target("kitchen"),
+        "last_kitchen": load_last_mode("kitchen"),
+        "last_all": load_last_mode(None),
+    }
+    _write_json_atomic(COOK_OVERRIDE_FILE, saved)
+    _save_cook_press_state("activate")
+    _cook_log(
+        "activate branch wrote override",
+        saved_effect=saved["effect"],
+        saved_effect_group=saved["effect_group"],
+        saved_kitchen_mode=saved["last_kitchen"],
+        saved_all_mode=saved["last_all"],
+    )
+
+    if saved["effect"]:
+        if saved["effect_group"] == "all":
+            stop_running_effect("all")
+            launch_background(saved["effect"], "entryway")
+            save_last_mode(saved["effect"], "entryway")
+            _cook_log("moved all effect to entryway", effect=saved["effect"])
+        elif saved["effect_group"] == "kitchen":
+            stop_running_effect("kitchen")
+            _cook_log("stopped kitchen effect for cook", effect=saved["effect"])
+
+    _set_active_group("kitchen")
+    try:
+        save_pending_mode(COOK_MODE, "kitchen")
+        # Reset to a clean warm-white pilot first so no residual RGB/effect
+        # color can bleed through, then dim down to the cook target. This
+        # mirrors the verified-good manual sequence: `warm` then `dim`.
+        await turn_on("warm")
+        await turn_on(COOK_MODE)
+    finally:
+        _set_active_group(old_group)
+    _cook_log("kitchen set to cook mode", mode=COOK_MODE)
+
+    print(f"COOK         kitchen {COOK_MODE}")
 
 # --------------------------------------------------
 # MAIN CLI
@@ -1976,14 +3751,20 @@ def print_help() -> None:
     print("  status              Show current state")
     print("  dash | dashboard     Live-updating status view")
     print("  on | off | toggle | stop")
-    print("  dim <delta>")
+    print("  cook                Toggle kitchen cooking mode")
+    print("  dim [delta]")
     print("  dim <B1|B2> <delta>")
     print("  alert [seconds]       Pulse alert (toggle on/off)")
     print("  alert_pulse | alert-pulse [seconds] Pulse alert (toggle on/off)")
     print("  alert_police | alert-police [seconds] Police-style alert")
     print("  fade <preset> <seconds>")
+    print("  scene <name>        Run a custom multi-step scene")
     print("  b1 <preset> | b2 <preset> | duo <preset1> <preset2>")
     print("  snapshot save [name] | snapshot load [name] | snapshot list")
+    print("")
+    print("Custom scenes:")
+    for name in sorted(CUSTOM_SCENES):
+        print(f"  {name}")
     print("")
     print("Background effects:")
     for name in sorted(BACKGROUND_EFFECTS):
@@ -1991,7 +3772,7 @@ def print_help() -> None:
     print("")
     print("Static presets:")
     for name in sorted(PRESETS.keys()):
-        if name not in BACKGROUND_EFFECTS:
+        if name not in BACKGROUND_EFFECTS and name != "romance":
             print(f"  {name}")
 
 async def dashboard_loop(interval: float = 1.0) -> None:
@@ -2017,13 +3798,29 @@ async def main(argv: list[str]) -> None:
         if len(argv) < 2:
             raise SystemExit("Usage: lights --bg <effect> [group]")
         bg_cmd = _normalize_cmd(argv[1])
+        bg_cmd = COMMAND_ALIASES.get(bg_cmd, bg_cmd)
         rest = argv[2:]
         group, rest = _maybe_consume_group(rest)
         _set_active_group(group)
+        _audit_log("invoke", phase="bg", group=active_group() or "all", cmd=bg_cmd, args=rest)
         if DRY_RUN:
             print(f"DRY_RUN      bg={bg_cmd} group={active_group() or 'all'} args={rest}")
             return
-        await run_background(bg_cmd, rest)
+        _effect_log("START", cmd=bg_cmd, group=active_group() or "all", args=rest)
+        error = None
+        try:
+            await run_background(bg_cmd, rest)
+        except asyncio.CancelledError:
+            error = "cancelled"
+            raise
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            _audit_log("bg_error", group=active_group() or "all", cmd=bg_cmd, error=error)
+            _effect_log("ERROR", cmd=bg_cmd, group=active_group() or "all", error=error)
+            raise
+        finally:
+            _audit_log("bg_exit", group=active_group() or "all", cmd=bg_cmd, error=error)
+            _effect_log("EXIT", cmd=bg_cmd, group=active_group() or "all", error=error)
         return
 
     # Optional group prefix (normal CLI)
@@ -2040,9 +3837,15 @@ async def main(argv: list[str]) -> None:
         return
 
     cmd = _normalize_cmd(argv[0])
+    cmd = COMMAND_ALIASES.get(cmd, cmd)
+    _audit_log("invoke", phase="cli", group=active_group() or "all", cmd=cmd, args=argv[1:])
 
     if cmd in {"help", "-h", "--help", "?"}:
         print_help()
+        return
+
+    if cmd in {"current-mode", "current_mode"}:
+        print(",".join(current_mode_names()))
         return
 
     if DRY_RUN:
@@ -2068,15 +3871,26 @@ async def main(argv: list[str]) -> None:
 
     # ---------------- basic ----------------
     if cmd == "on":
-        stop_running_effect(active_group())
+        stop_effects_affecting_target()
 
-        mode = load_last_mode(active_group()) or "golden_white"
+        mode = load_last_mode_for_target() or "golden_white"
+        save_pending_mode(mode, active_group())
 
         if mode in BACKGROUND_EFFECTS:
             launch_background(mode, group_for_bg)
+            emit_effect_started(mode, command=cmd)
+            return
+
+        if mode in CUSTOM_SCENES:
+            await run_or_launch_custom_scene(mode, group_for_bg)
+            if _scene_uses_background(mode):
+                emit_effect_started(mode, command=cmd)
+            else:
+                emit_scene_changed(mode, command=cmd)
             return
 
         await turn_on(mode)
+        emit_scene_changed(mode, command=cmd)
         return
 
     if cmd == "snapshot":
@@ -2096,14 +3910,15 @@ async def main(argv: list[str]) -> None:
         raise SystemExit("Usage: lights snapshot save [name] | load [name] | list")
 
     if cmd == "off":
-        stop_running_effect(active_group())
+        save_pending_mode("off", active_group())
+        stop_effects_affecting_target()
         await turn_off()
-        save_last_mode("golden_white", active_group())
+        emit_lights_off(command=cmd)
         return
 
     if cmd == "toggle":
         # Optional mode override: lights kitchen toggle cozy
-        toggle_mode = argv[1] if len(argv) > 1 else None
+        toggle_mode = _normalize_cmd(argv[1]) if len(argv) > 1 else None
 
         # Query bulbs using robust UDP helper (returns None on timeout
         # instead of throwing).  Check all bulbs so one unreachable
@@ -2119,14 +3934,25 @@ async def main(argv: list[str]) -> None:
                     break
 
         if any_on:
-            stop_running_effect(active_group())
+            save_pending_mode("off", active_group())
+            stop_effects_affecting_target()
             await turn_off()
+            emit_lights_off(command=cmd)
         else:
-            mode = toggle_mode or load_last_mode(active_group()) or "golden_white"
+            mode = toggle_mode or load_last_mode_for_target() or "golden_white"
+            save_pending_mode(mode, active_group())
             if mode in BACKGROUND_EFFECTS:
                 launch_background(mode, group_for_bg)
+                emit_effect_started(mode, command=cmd)
+            elif mode in CUSTOM_SCENES:
+                await run_or_launch_custom_scene(mode, group_for_bg)
+                if _scene_uses_background(mode):
+                    emit_effect_started(mode, command=cmd)
+                else:
+                    emit_scene_changed(mode, command=cmd)
             else:
                 await turn_on(mode)
+                emit_scene_changed(mode, command=cmd)
         return
 
     if cmd == "status":
@@ -2134,11 +3960,19 @@ async def main(argv: list[str]) -> None:
         return
 
     if cmd == "stop":
+        stopped_effect = load_effect_affecting_target()
         try:
             ALERT_PULSE_TOGGLE.unlink()
         except FileNotFoundError:
             pass
-        stop_running_effect(active_group())
+        stop_effects_affecting_target()
+        clear_pending_mode()
+        await asyncio.sleep(0.25)
+        emit_effect_stopped(stopped_effect, command=cmd)
+        return
+
+    if cmd == "cook":
+        await cook_toggle()
         return
 
     # ---------------- alerts ----------------
@@ -2151,19 +3985,24 @@ async def main(argv: list[str]) -> None:
                 ALERT_PULSE_TOGGLE.unlink()
             except FileNotFoundError:
                 pass
-            stop_running_effect(active_group())
+            stop_effects_affecting_target()
             print("ALERT_PULSE   stopped")
+            emit_effect_stopped("alert_pulse", command=cmd)
             return
 
         # Otherwise start it
         ALERT_PULSE_TOGGLE.write_text("1")
-        stop_running_effect(active_group())
+        save_pending_mode("alert_pulse", active_group())
+        stop_effects_affecting_target()
+        emit_effect_started("alert_pulse", command=cmd)
         await alert_pulse(seconds=secs)
         return
 
     if cmd == "alert_police":
         secs = float(argv[1]) if len(argv) > 1 else 15.0
-        stop_running_effect(active_group())
+        save_pending_mode("alert_police", active_group())
+        stop_effects_affecting_target()
+        emit_effect_started("alert_police", command=cmd)
         await alert_police(seconds=secs)
         return
 
@@ -2176,25 +4015,32 @@ async def main(argv: list[str]) -> None:
                 ALERT_PULSE_TOGGLE.unlink()
             except FileNotFoundError:
                 pass
-            stop_running_effect(active_group())
+            stop_effects_affecting_target()
             print("ALERT_PULSE   stopped")
+            emit_effect_stopped("alert_pulse", command=cmd)
             return
 
         # Otherwise start it
         ALERT_PULSE_TOGGLE.write_text("1")
-        stop_running_effect(active_group())
+        save_pending_mode("alert_pulse", active_group())
+        stop_effects_affecting_target()
+        emit_effect_started("alert_pulse", command=cmd)
         await alert_pulse(seconds=secs)
         return
 
 
     # ---------------- dim ----------------
     if cmd == "dim":
+        if len(argv) == 1:
+            delta = -40
+            if dim_running_effect(delta):
+                return
+            await dim_adjust("ALL", delta)
+            return
+
         if len(argv) == 2:
             delta = int(argv[1])
-            if effect_is_running():
-                cur = load_effect_bri(255)
-                new = save_effect_bri(cur + delta)
-                print(f"EFFECT_DIM    bri={new}")
+            if dim_running_effect(delta):
                 return
             await dim_adjust("ALL", delta)
             return
@@ -2204,57 +4050,106 @@ async def main(argv: list[str]) -> None:
             delta = int(argv[2])
 
             if raw_target in {"b1", "1"}:
+                if dim_running_effect(delta):
+                    return
                 await dim_adjust("B1", delta)
                 return
             if raw_target in {"b2", "2"}:
+                if dim_running_effect(delta):
+                    return
                 await dim_adjust("B2", delta)
                 return
 
             # still allow the old explicit form
             target = argv[1].upper()
+            if dim_running_effect(delta):
+                return
             await dim_adjust(target, delta)
             return
 
-        raise SystemExit("Usage: lights dim <delta> | lights dim <B1|B2> <delta>")
+        raise SystemExit("Usage: lights dim [delta] | lights dim <B1|B2> <delta>")
 
     # ---------------- fade ----------------
     if cmd == "fade":
         if len(argv) != 3:
             raise SystemExit("Usage: lights fade <preset> <seconds>")
-        stop_running_effect(active_group())
-        await fade_to(argv[1], float(argv[2]))
-        save_last_mode(argv[1], active_group())
+        mode = _normalize_cmd(argv[1])
+        stop_effects_affecting_target()
+        save_pending_mode(mode, active_group())
+        await fade_to(mode, float(argv[2]))
+        save_last_mode(mode, active_group())
+        emit_scene_changed(mode, command=cmd)
+        return
+
+    # ---------------- custom scenes ----------------
+    if cmd == "scene":
+        if len(argv) != 2:
+            raise SystemExit("Usage: lights scene <name>")
+        scene_name = _normalize_cmd(argv[1])
+        if scene_name not in CUSTOM_SCENES:
+            raise SystemExit(f"Unknown custom scene: {argv[1]}")
+        stop_effects_affecting_target()
+        save_pending_mode(scene_name, active_group())
+        await run_or_launch_custom_scene(scene_name, group_for_bg)
+        save_last_mode(_scene_result_mode(scene_name), active_group())
+        if _scene_uses_background(scene_name):
+            emit_effect_started(scene_name, command=cmd)
+        else:
+            emit_scene_changed(scene_name, command=cmd)
         return
 
     # ---------------- bulb targeting ----------------
     if cmd == "b1":
         if len(argv) != 2:
             raise SystemExit("Usage: lights b1 <preset>")
-        stop_running_effect(active_group())
-        await turn_on_b1(argv[1])
-        save_last_mode(argv[1], active_group())
+        mode = _normalize_cmd(argv[1])
+        stop_effects_affecting_target()
+        save_pending_mode(mode, active_group())
+        await turn_on_b1(mode)
+        save_last_mode(mode, active_group())
+        emit_scene_changed(mode, command=cmd, target_name="b1")
         return
 
     if cmd == "b2":
         if len(argv) != 2:
             raise SystemExit("Usage: lights b2 <preset>")
-        stop_running_effect(active_group())
-        await turn_on_b2(argv[1])
-        save_last_mode(argv[1], active_group())
+        mode = _normalize_cmd(argv[1])
+        stop_effects_affecting_target()
+        save_pending_mode(mode, active_group())
+        await turn_on_b2(mode)
+        save_last_mode(mode, active_group())
+        emit_scene_changed(mode, command=cmd, target_name="b2")
         return
 
     if cmd == "duo":
         if len(argv) != 3:
             raise SystemExit("Usage: lights duo <preset1> <preset2>")
-        stop_running_effect(active_group())
-        await turn_duo(argv[1], argv[2])
-        save_last_mode(argv[1], active_group())
+        mode_b1 = _normalize_cmd(argv[1])
+        mode_b2 = _normalize_cmd(argv[2])
+        stop_effects_affecting_target()
+        save_pending_mode(mode_b1, active_group())
+        await turn_duo(mode_b1, mode_b2)
+        save_last_mode(mode_b1, active_group())
+        emit_scene_changed(f"{mode_b1},{mode_b2}", command=cmd, target_name="duo")
         return
 
     # ---------------- background effects ----------------
     if cmd in BACKGROUND_EFFECTS:
         launch_background(cmd, group_for_bg)
         save_last_mode(cmd, active_group())
+        emit_effect_started(cmd, command=cmd)
+        return
+
+    # ---------------- custom scene aliases ----------------
+    if cmd in CUSTOM_SCENES:
+        stop_effects_affecting_target()
+        save_pending_mode(cmd, active_group())
+        await run_or_launch_custom_scene(cmd, group_for_bg)
+        save_last_mode(_scene_result_mode(cmd), active_group())
+        if _scene_uses_background(cmd):
+            emit_effect_started(cmd, command=cmd)
+        else:
+            emit_scene_changed(cmd, command=cmd)
         return
 
     # ---------------- static presets ----------------
@@ -2264,13 +4159,25 @@ async def main(argv: list[str]) -> None:
         print_help()
         raise SystemExit(2)
 
-    stop_running_effect(active_group())
+    stop_effects_affecting_target()
+    save_pending_mode(cmd, active_group())
     await turn_on(cmd)
     save_last_mode(cmd, active_group())
+    emit_scene_changed(cmd, command=cmd)
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main(sys.argv[1:]))
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         pass
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 1
+        if code:
+            command = _normalize_cmd(sys.argv[1]) if len(sys.argv) > 1 else "unknown"
+            emit_lights_error(command, str(exc))
+        raise
+    except Exception as exc:
+        command = _normalize_cmd(sys.argv[1]) if len(sys.argv) > 1 else "unknown"
+        emit_lights_error(command, f"{type(exc).__name__}: {exc}")
+        raise
