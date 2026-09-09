@@ -106,6 +106,7 @@ MINOTAUR_ALLOWED_EVENTS = {
     "lights.off",
     "lights.error",
 }
+ROUTINE_READ_ONLY_CLI_COMMANDS = {"current_mode"}
 
 CYCLE_ORDER = [
     "warm",
@@ -3525,6 +3526,10 @@ def _audit_log(event: str, **fields) -> None:
         pass
 
 
+def _should_audit_cli_invoke(cmd: str) -> bool:
+    return cmd not in ROUTINE_READ_ONLY_CLI_COMMANDS
+
+
 def _load_cook_press_state() -> dict:
     try:
         raw = COOK_DEBOUNCE_FILE.read_text().strip()
@@ -3838,14 +3843,28 @@ async def main(argv: list[str]) -> None:
 
     cmd = _normalize_cmd(argv[0])
     cmd = COMMAND_ALIASES.get(cmd, cmd)
-    _audit_log("invoke", phase="cli", group=active_group() or "all", cmd=cmd, args=argv[1:])
+    audit_cli_invoke = _should_audit_cli_invoke(cmd)
+    if audit_cli_invoke:
+        _audit_log("invoke", phase="cli", group=active_group() or "all", cmd=cmd, args=argv[1:])
 
     if cmd in {"help", "-h", "--help", "?"}:
         print_help()
         return
 
     if cmd in {"current-mode", "current_mode"}:
-        print(",".join(current_mode_names()))
+        try:
+            print(",".join(current_mode_names()))
+        except Exception as exc:
+            if not audit_cli_invoke:
+                _audit_log(
+                    "cli_error",
+                    phase="cli",
+                    group=active_group() or "all",
+                    cmd=cmd,
+                    args=argv[1:],
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            raise
         return
 
     if DRY_RUN:
