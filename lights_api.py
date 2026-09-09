@@ -5,6 +5,7 @@ from pywizlight import PilotBuilder, wizlight
 import os
 import subprocess
 
+import lights
 from lights_config import GROUPS, IPS as ALL_IPS, LIGHTS_SCRIPT, room_by_ip_lower
 
 LIGHTS = str(LIGHTS_SCRIPT)
@@ -95,13 +96,45 @@ VALID_ROOMS = set(GROUPS)
 def clamp_brightness(value: int) -> int:
     return max(1, min(255, int(value)))
 
+
+def _brightness_plan(room: str) -> tuple[dict[str, list[str]], list[str]]:
+    """Partition a brightness target by the effects currently controlling it."""
+    target_ips = list(GROUPS[room])
+    if room != "all":
+        effect_group = lights.effect_group_affecting_target(room)
+        effect_targets = {effect_group: target_ips} if effect_group else {}
+        return effect_targets, ([] if effect_group else target_ips)
+
+    effect_targets: dict[str, list[str]] = {}
+    controlled_ips: set[str] = set()
+    for target_room in GROUPS:
+        if target_room == "all":
+            continue
+        effect_group = lights.effect_group_affecting_target(target_room)
+        if effect_group is None:
+            continue
+        effect_targets.setdefault(effect_group, []).extend(GROUPS[target_room])
+        controlled_ips.update(GROUPS[target_room])
+
+    direct_ips = [ip for ip in target_ips if ip not in controlled_ips]
+    return effect_targets, direct_ips
+
+
 async def set_group_brightness(room: str, brightness: int):
     if room not in VALID_ROOMS:
         raise HTTPException(404, f"Unknown room: {room}")
 
     bri = clamp_brightness(brightness)
-    bulbs = [wizlight(ip) for ip in GROUPS[room]]
-    results = []
+    effect_targets, direct_ips = _brightness_plan(room)
+    for effect_group in effect_targets:
+        lights.save_effect_bri(bri, group=effect_group)
+
+    bulbs = [wizlight(ip) for ip in direct_ips]
+    results_by_ip = {
+        ip: {"ip": ip, "ok": True, "brightness": bri}
+        for ips in effect_targets.values()
+        for ip in ips
+    }
     try:
         for bulb in bulbs:
             try:
@@ -120,13 +153,24 @@ async def set_group_brightness(room: str, brightness: int):
                 else:
                     pilot = PilotBuilder(brightness=bri, colortemp=2700)
                 await bulb.turn_on(pilot)
-                results.append({"ip": bulb.ip, "ok": True, "brightness": bri})
+                results_by_ip[bulb.ip] = {"ip": bulb.ip, "ok": True, "brightness": bri}
             except Exception as exc:
-                results.append({"ip": bulb.ip, "ok": False, "error": type(exc).__name__})
+                results_by_ip[bulb.ip] = {"ip": bulb.ip, "ok": False, "error": type(exc).__name__}
     finally:
         for bulb in bulbs:
             await bulb.async_close()
-    return {"room": room, "brightness": bri, "bulbs": results}
+
+    result = {
+        "room": room,
+        "brightness": bri,
+        "bulbs": [results_by_ip[ip] for ip in GROUPS[room]],
+    }
+    effect_groups = list(effect_targets)
+    if len(effect_groups) == 1:
+        result["effect_group"] = effect_groups[0]
+    elif effect_groups:
+        result["effect_groups"] = effect_groups
+    return result
 
 @app.post("/room/{room}/toggle")
 def room_toggle(room: str):
